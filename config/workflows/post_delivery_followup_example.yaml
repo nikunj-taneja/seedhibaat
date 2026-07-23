@@ -1,0 +1,85 @@
+name: post_delivery_followup_example
+version: 1
+description: Disabled example that follows up after a selected product is fully delivered.
+enabled: false
+timezone: UTC
+trigger:
+  type: order_delivered
+audience:
+  product_handles:
+    - example-starter-product
+  product_tags:
+    - starter-product
+  product_titles:
+    - Starter Product
+  require_whatsapp_consent: true
+quiet_hours:
+  start: "21:00"
+  end: "09:00"
+frequency_cap:
+  messages: 4
+  window: 672h
+conversion:
+  product_tags:
+    - upgraded-product
+  product_titles:
+    - Upgraded Product
+  product_handles:
+    - example-upgraded-product
+steps:
+  - id: day_1
+    wait: 1d
+    template: approved_post_delivery_day_1
+    language: en_US
+    category: MARKETING
+    tracked_url: https://example.com/products/upgraded-product
+    params: {}
+    conditions:
+      order_not_cancelled: true
+      order_not_refunded: true
+      customer_has_not_purchased:
+        product_tags: [upgraded-product]
+        product_titles: [Upgraded Product]
+        product_handles: [example-upgraded-product]
+  - id: day_7
+    wait: 7d
+    template: approved_post_delivery_day_7
+    language: en_US
+    category: MARKETING
+    tracked_url: https://example.com/products/upgraded-product
+    params: {}
+    conditions:
+      order_not_cancelled: true
+      order_not_refunded: true
+      customer_has_not_purchased:
+        product_tags: [upgraded-product]
+        product_titles: [Upgraded Product]
+        product_handles: [example-upgraded-product]
+  - id: day_21
+    wait: 21d
+    template: approved_post_delivery_day_21
+    language: en_US
+    category: MARKETING
+    tracked_url: https://example.com/products/upgraded-product
+    params: {}
+    conditions:
+      order_not_cancelled: true
+      order_not_refunded: true
+      customer_has_not_purchased:
+        product_tags: [upgraded-product]
+        product_titles: [Upgraded Product]
+        product_handles: [example-upgraded-product]
+  - id: day_28
+    wait: 28d
+    template: approved_post_delivery_day_28
+    language: en_US
+    category: MARKETING
+    tracked_url: https://example.com/products/upgraded-product
+    params: {}
+    conditions:
+      order_not_cancelled: true
+      order_not_refunded: true
+      customer_has_not_purchased:
+        product_tags: [upgraded-product]
+        product_titles: [Upgraded Product]
+        product_handles: [example-upgraded-product]

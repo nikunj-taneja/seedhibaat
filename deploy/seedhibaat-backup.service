@@ -1,0 +1,17 @@
+[Unit]
+Description=Create encrypted SeedhiBaat SQLite backup
+After=seedhibaat.service
+
+[Service]
+Type=oneshot
+User=seedhibaat
+Group=seedhibaat
+WorkingDirectory=/opt/seedhibaat
+EnvironmentFile=/etc/seedhibaat/seedhibaat.env
+ExecStart=/opt/seedhibaat/bin/seedhibaatd backup
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/seedhibaat /var/backups/seedhibaat

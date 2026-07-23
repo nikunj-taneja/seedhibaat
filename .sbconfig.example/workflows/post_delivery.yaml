@@ -1,0 +1,47 @@
+name: example_post_delivery
+version: 1
+description: Disabled private-deployment example for a post-delivery follow-up.
+enabled: false
+timezone: UTC
+trigger:
+  type: order_delivered
+audience:
+  product_handles:
+    - example-starter-product
+  product_tags:
+    - starter-product
+  product_titles:
+    - Starter Product
+  require_whatsapp_consent: true
+quiet_hours:
+  start: "21:00"
+  end: "09:00"
+frequency_cap:
+  messages: 1
+  window: 168h
+conversion:
+  product_handles:
+    - example-upgraded-product
+  product_tags:
+    - upgraded-product
+  product_titles:
+    - Upgraded Product
+steps:
+  - id: day_1
+    wait: 1d
+    template: example_post_delivery
+    language: en_US
+    category: MARKETING
+    tracked_url: https://example.com/products/upgraded-product
+    params:
+      body.1: order.first_product_title
+    conditions:
+      order_not_cancelled: true
+      order_not_refunded: true
+      customer_has_not_purchased:
+        product_handles:
+          - example-upgraded-product
+        product_tags:
+          - upgraded-product
+        product_titles:
+          - Upgraded Product

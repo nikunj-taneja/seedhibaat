@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted SeedhiBaat backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 Asia/Kolkata
+RandomizedDelaySec=15m
+Persistent=true
+Unit=seedhibaat-backup.service
+
+[Install]
+WantedBy=timers.target

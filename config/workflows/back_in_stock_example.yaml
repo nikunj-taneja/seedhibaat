@@ -1,0 +1,33 @@
+name: back_in_stock_example
+version: 1
+description: Disabled example that notifies opted-in past buyers when a selected product returns to stock.
+enabled: false
+timezone: UTC
+trigger:
+  type: inventory_back_in_stock
+audience:
+  product_handles:
+    - example-product
+  product_tags: []
+  product_titles: []
+  require_whatsapp_consent: true
+quiet_hours:
+  start: "21:00"
+  end: "10:00"
+frequency_cap:
+  messages: 1
+  window: 168h
+conversion:
+  product_handles:
+    - example-product
+  product_tags: []
+  product_titles: []
+steps:
+  - id: available_now
+    wait: 0s
+    template: approved_back_in_stock
+    language: en_US
+    category: MARKETING
+    tracked_url: https://example.com/products/example-product
+    params: {}
+    conditions: {}

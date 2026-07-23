@@ -1,0 +1,35 @@
+[Unit]
+Description=SeedhiBaat WhatsApp automation daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seedhibaat
+Group=seedhibaat
+WorkingDirectory=/opt/seedhibaat
+EnvironmentFile=/etc/seedhibaat/seedhibaat.env
+ExecStart=/opt/seedhibaat/bin/seedhibaatd serve
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/seedhibaat /var/backups/seedhibaat
+
+[Install]
+WantedBy=multi-user.target

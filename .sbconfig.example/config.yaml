@@ -1,0 +1,38 @@
+schema_version: 1
+
+deployment:
+  name: example-store
+  public_base_url: https://wa.example.com
+  redirect_allowed_hosts:
+    - example.com
+    - www.example.com
+  timezone: UTC
+  workflow_source: .sbconfig/workflows
+
+meta:
+  app_id: "REPLACE_WITH_META_APP_ID"
+  production:
+    waba_id: "REPLACE_WITH_PRODUCTION_WABA_ID"
+    phone_number_id: "REPLACE_WITH_PRODUCTION_PHONE_NUMBER_ID"
+  test:
+    waba_id: "REPLACE_WITH_TEST_WABA_ID"
+    phone_number_id: "REPLACE_WITH_TEST_PHONE_NUMBER_ID"
+  templates:
+    - example_post_delivery
+
+shopify:
+  shop_domain: example-store.myshopify.com
+  client_id: "REPLACE_WITH_SHOPIFY_CLIENT_ID"
+  api_version: "2026-07"
+  required_scope_gap: []
+
+migration:
+  source_provider: example-provider
+  status: planned
+  production_activation_allowed: false
+  required_exports:
+    - whatsapp_consent
+    - whatsapp_opt_outs
+    - active_flow_definitions
+    - template_inventory
+    - suppression_lists

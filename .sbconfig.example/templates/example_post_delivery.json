@@ -1,0 +1,31 @@
+{
+  "name": "example_post_delivery",
+  "language": "en_US",
+  "category": "MARKETING",
+  "components": [
+    {
+      "type": "BODY",
+      "text": "Replace this placeholder with operator-approved message copy for {{1}}.",
+      "example": {
+        "body_text": [
+          [
+            "Example Product"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "BUTTONS",
+      "buttons": [
+        {
+          "type": "URL",
+          "text": "View details",
+          "url": "https://wa.example.com/r/{{1}}",
+          "example": [
+            "example-tracking-token"
+          ]
+        }
+      ]
+    }
+  ]
+}
