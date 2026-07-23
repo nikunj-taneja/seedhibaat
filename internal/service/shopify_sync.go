@@ -483,7 +483,7 @@ func (p *Processor) startDeliveredWorkflows(ctx context.Context, customerID int6
 			if err != nil {
 				return err
 			}
-			payload, _ := json.Marshal(sendPayload{CustomerID: customerID, RunID: runID, Template: step.Template, Language: step.Language, Category: step.Category, TrackedURL: step.URL, Params: step.Params, Conditions: step.Conditions, FrequencyMessages: definition.Frequency.Messages, FrequencyWindow: definition.Frequency.Window, Timezone: definition.Timezone, QuietStart: definition.QuietHours.Start, QuietEnd: definition.QuietHours.End})
+			payload, _ := json.Marshal(sendPayload{CustomerID: customerID, RunID: runID, Template: step.Template, Language: step.Language, Category: step.Category, TrackedURL: step.URL, HeaderImageURL: step.HeaderImageURL, Params: step.Params, Conditions: step.Conditions, FrequencyMessages: definition.Frequency.Messages, FrequencyWindow: definition.Frequency.Window, Timezone: definition.Timezone, QuietStart: definition.QuietHours.Start, QuietEnd: definition.QuietHours.End})
 			job := store.Job{ID: store.NewID("job"), WorkflowRunID: sql.NullString{String: runID, Valid: true}, StepID: step.ID, Kind: "send_whatsapp", Payload: payload, MaxAttempts: 8}
 			key := fmt.Sprintf("workflow:%s:v%d:%d:%s:%s", name, version, customerID, order.ID, step.ID)
 			if _, err := p.Store.EnqueueJob(ctx, job, key, at); err != nil {
@@ -678,7 +678,7 @@ func (p *Processor) startInventoryWorkflows(ctx context.Context, product shopify
 			for _, step := range definition.Steps {
 				delay, _ := workflow.ParseWait(step.Wait)
 				at, _ := workflow.NextAllowedTime(triggeredAt.Add(delay), definition.Timezone, definition.QuietHours.Start, definition.QuietHours.End)
-				payload, _ := json.Marshal(sendPayload{CustomerID: customerID, RunID: runID, Template: step.Template, Language: step.Language, Category: step.Category, TrackedURL: step.URL, Params: step.Params, Conditions: step.Conditions, FrequencyMessages: definition.Frequency.Messages, FrequencyWindow: definition.Frequency.Window, Timezone: definition.Timezone, QuietStart: definition.QuietHours.Start, QuietEnd: definition.QuietHours.End})
+				payload, _ := json.Marshal(sendPayload{CustomerID: customerID, RunID: runID, Template: step.Template, Language: step.Language, Category: step.Category, TrackedURL: step.URL, HeaderImageURL: step.HeaderImageURL, Params: step.Params, Conditions: step.Conditions, FrequencyMessages: definition.Frequency.Messages, FrequencyWindow: definition.Frequency.Window, Timezone: definition.Timezone, QuietStart: definition.QuietHours.Start, QuietEnd: definition.QuietHours.End})
 				key := fmt.Sprintf("workflow:%s:v%d:%d:%s:%s", name, version, customerID, triggerID, step.ID)
 				_, err = p.Store.EnqueueJob(ctx, store.Job{ID: store.NewID("job"), WorkflowRunID: sql.NullString{String: runID, Valid: true}, StepID: step.ID, Kind: "send_whatsapp", Payload: payload}, key, at)
 				if err != nil {

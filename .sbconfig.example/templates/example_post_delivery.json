@@ -4,6 +4,15 @@
   "category": "MARKETING",
   "components": [
     {
+      "type": "HEADER",
+      "format": "IMAGE",
+      "example": {
+        "header_handle": [
+          "REPLACE_WITH_META_UPLOAD_HANDLE"
+        ]
+      }
+    },
+    {
       "type": "BODY",
       "text": "Replace this placeholder with operator-approved message copy for {{1}}.",
       "example": {

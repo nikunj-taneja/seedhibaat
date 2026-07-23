@@ -17,8 +17,8 @@ serves an authenticated, read-only aggregate metrics dashboard.
 
 - Submit explicitly approved WhatsApp template definitions and poll their Meta
   review status
-- Send approved templates from CSV with variables and static or dynamic URL
-  buttons
+- Send approved templates from CSV with variables, image headers, and static
+  or dynamic URL buttons
 - Run versioned, event-driven YAML workflows with durable waits
 - Build product-buyer, recent-purchaser, lapsed, not-reordered, and
   back-in-stock audiences
@@ -272,6 +272,22 @@ PYTHONPATH=src python3 -m seedhibaat template submit \
 
 Submission is not approval. Poll the exact template name before sending.
 
+IMAGE headers require a JPEG or PNG sample no larger than 5 MB. Validate the
+exact file locally first:
+
+```bash
+PYTHONPATH=src python3 -m seedhibaat template media-upload \
+  --file .sbconfig/assets/example-header.jpg
+```
+
+Only after approving that exact media should an operator repeat the command
+with `--upload --yes --handle-file .sbconfig/assets/example-header.handle`.
+The resulting owner-only handle file is used as the header sample in the
+template definition; SeedhiBaat never prints the handle. Uploading the sample
+does not submit the template. Pass it during the separately approved template
+submission with `--header-handle-file
+.sbconfig/assets/example-header.handle`.
+
 For tracked URL buttons, the template uses the public SeedhiBaat redirect URL
 with a dynamic suffix, for example
 `https://wa.example.com/r/{{1}}`. SeedhiBaat supplies a unique signed suffix
@@ -298,6 +314,9 @@ Reloading never activates a workflow. Activation requires both gates,
 `--activate --yes`, and the exact previewed count. Historical backfill remains
 off unless separately implemented and approved. Simulation calculates every
 quiet-hours-adjusted step time but writes no database state and sends nothing.
+For an approved IMAGE-header template, set `header_image_url` on the workflow
+step to a public HTTPS JPEG/PNG. The durable sender includes it in the retry
+fingerprint and supplies it to Meta before body and button parameters.
 
 ## Segments and campaigns
 
@@ -332,6 +351,7 @@ PYTHONPATH=src python3 -m seedhibaat send \
   --csv recipients.csv \
   --template approved_template \
   --language en_US \
+  --header-image-url https://wa.example.com/media/example-header.jpg \
   --body-param customer_name \
   --url-button-param 0:tracking_token
 ```
@@ -400,6 +420,7 @@ Keep each real business deployment in an ignored `.sbconfig/` directory:
 
 ```text
 .sbconfig/
+  assets/
   config.yaml
   workflows/
   templates/
@@ -420,10 +441,12 @@ make those edits only in the ignored `.sbconfig/` copy.
 `config.yaml` may contain non-secret asset IDs, domains, template names, and
 migration notes. Provider tokens, app secrets, signing keys, verification
 codes, and PINs still belong only in `.env` or the owner-only server
-environment. Deploy the private workflows with:
+environment. Deploy private workflows and public template media with:
 
 ```bash
-SEEDHIBAAT_WORKFLOW_SOURCE=.sbconfig/workflows tools/deploy.sh
+SEEDHIBAAT_WORKFLOW_SOURCE=.sbconfig/workflows \
+SEEDHIBAAT_MEDIA_SOURCE=.sbconfig/assets \
+tools/deploy.sh
 ```
 
 ## License

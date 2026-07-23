@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,4 +75,45 @@ func TestWaitsSupportDaysHoursAndMinutes(t *testing.T) {
 			t.Fatalf("input=%s got=%s want=%s err=%v", input, got, want, err)
 		}
 	}
+}
+
+func TestImageHeaderURLValidation(t *testing.T) {
+	valid := []byte(`
+name: image_flow
+version: 1
+enabled: false
+timezone: Asia/Kolkata
+trigger:
+  type: order_delivered
+quiet_hours:
+  start: "21:00"
+  end: "10:00"
+frequency_cap:
+  messages: 1
+  window: 24h
+steps:
+  - id: image
+    wait: 1d
+    template: image_template
+    language: en_US
+    category: MARKETING
+    header_image_url: https://cdn.example.com/header.webp
+    params: {}
+`)
+	if _, err := Parse("image.yaml", valid); err != nil {
+		t.Fatal(err)
+	}
+	invalidHTTP := []byte(string(valid))
+	invalidHTTP = []byte(stringReplace(string(invalidHTTP), "https://", "http://"))
+	if _, err := Parse("image-http.yaml", invalidHTTP); err == nil {
+		t.Fatal("non-HTTPS image URL accepted")
+	}
+	withTextHeader := []byte(stringReplace(string(valid), "params: {}", "params:\n      header.1: literal:Hello"))
+	if _, err := Parse("image-text-header.yaml", withTextHeader); err == nil {
+		t.Fatal("image header combined with text header parameters")
+	}
+}
+
+func stringReplace(value, old, replacement string) string {
+	return strings.Replace(value, old, replacement, 1)
 }

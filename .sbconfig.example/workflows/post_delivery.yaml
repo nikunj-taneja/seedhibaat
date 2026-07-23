@@ -32,6 +32,9 @@ steps:
     template: example_post_delivery
     language: en_US
     category: MARKETING
+    # Optional for templates with an IMAGE header. The JPEG/PNG must be public
+    # over HTTPS and is included in the parameter fingerprint for safe retries.
+    header_image_url: https://wa.example.com/media/example-header.jpg
     tracked_url: https://example.com/products/upgraded-product
     params:
       body.1: order.first_product_title

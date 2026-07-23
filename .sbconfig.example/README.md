@@ -16,6 +16,11 @@ workflows, and migration notes. Keep tokens, app secrets, signing keys,
 verification tokens, verification codes, PINs, and customer data out of both
 directories; those belong in an owner-only `.env` or server environment file.
 
+Optional IMAGE-header assets belong in `.sbconfig/assets/`. Only put JPEG or
+PNG files intended to be publicly downloadable there. Deploy them with
+`SEEDHIBAAT_MEDIA_SOURCE=.sbconfig/assets`; Nginx serves them from `/media/`.
+Do not place secrets, customer uploads, or private media in that directory.
+
 The `shopify-app/` directory is a placeholder for Shopify CLI-managed app
 configuration. In the ignored private copy, link an existing app with:
 

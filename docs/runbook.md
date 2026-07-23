@@ -84,7 +84,10 @@ The VPS is x86-64 and does not need a Go toolchain. Build a static binary on the
 operator machine:
 
 ```bash
-GO_BIN=/path/to/go tools/deploy.sh
+GO_BIN=/path/to/go \
+SEEDHIBAAT_WORKFLOW_SOURCE=.sbconfig/workflows \
+SEEDHIBAAT_MEDIA_SOURCE=.sbconfig/assets \
+tools/deploy.sh
 ```
 
 The script creates a dedicated `seedhibaat` system user, installs files under
@@ -92,6 +95,8 @@ The script creates a dedicated `seedhibaat` system user, installs files under
 stopped. It does not modify unrelated services. Set
 `SEEDHIBAAT_WORKFLOW_SOURCE=.sbconfig/workflows` to deploy private,
 business-specific definitions rather than the tracked disabled examples.
+`SEEDHIBAAT_MEDIA_SOURCE` is optional and copies only top-level JPEG/PNG files
+to the public `/media/` directory. Never place secrets or customer media there.
 
 ## Provision secrets
 

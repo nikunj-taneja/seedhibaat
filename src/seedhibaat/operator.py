@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import secrets
@@ -262,6 +263,29 @@ def _meta_request(path: str, *, method: str = "GET", payload: Any = None, query:
     )
 
 
+def _meta_upload_bytes(session_id: str, body: bytes) -> Any:
+    env = _required_env("META_SYSTEM_USER_TOKEN", "META_GRAPH_API_VERSION")
+    url = (
+        "https://graph.facebook.com/"
+        f"{env['META_GRAPH_API_VERSION'].strip('/')}/{session_id.lstrip('/')}"
+    )
+    request = urllib.request.Request(url, data=body, method="POST")
+    request.add_header("Authorization", "OAuth " + env["META_SYSTEM_USER_TOKEN"])
+    request.add_header("file_offset", "0")
+    request.add_header("Content-Type", "application/octet-stream")
+    try:
+        with urllib.request.urlopen(
+            request, timeout=30, context=ssl.create_default_context()
+        ) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = _safe_error_detail(exc.read().decode(errors="replace")[:500])
+        raise OperatorError(f"HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise OperatorError(f"network error: {exc.reason}") from exc
+    return payload
+
+
 def run_meta_identity(args: argparse.Namespace) -> int:
     if args.profile == "test":
         env = _required_env(
@@ -308,12 +332,91 @@ def _load_template(path: Path) -> dict[str, Any]:
     return template
 
 
+def run_template_media_upload(args: argparse.Namespace) -> int:
+    try:
+        body = args.file.read_bytes()
+    except OSError as exc:
+        raise OperatorError(f"cannot read media file {args.file}: {exc}") from exc
+    if body.startswith(b"\xff\xd8\xff"):
+        media_type = "image/jpeg"
+    elif body.startswith(b"\x89PNG\r\n\x1a\n"):
+        media_type = "image/png"
+    else:
+        raise OperatorError("template image must be a JPEG or PNG")
+    if len(body) > 5 * 1024 * 1024:
+        raise OperatorError("template image exceeds Meta's 5 MB image limit")
+    print(f"Media: {args.file.name}")
+    print(f"Type: {media_type}")
+    print(f"Bytes: {len(body)}")
+    print(f"SHA-256: {hashlib.sha256(body).hexdigest()}")
+    if not args.upload:
+        print("Dry run only. Add --upload --yes after approving this exact media.")
+        return 0
+    if not args.yes:
+        raise OperatorError("media upload requires --upload --yes")
+    if args.handle_file is None:
+        raise OperatorError("media upload requires --handle-file")
+    env = _required_env("META_APP_ID")
+    session = _meta_request(
+        env["META_APP_ID"] + "/uploads",
+        method="POST",
+        query={
+            "file_name": args.file.name,
+            "file_length": str(len(body)),
+            "file_type": media_type,
+        },
+    )
+    session_id = str((session or {}).get("id", ""))
+    if not session_id:
+        raise OperatorError("Meta did not return an upload session ID")
+    result = _meta_upload_bytes(session_id, body)
+    handle = str((result or {}).get("h", ""))
+    if not handle:
+        raise OperatorError("Meta did not return a media handle")
+    try:
+        args.handle_file.parent.mkdir(parents=True, exist_ok=True)
+        args.handle_file.write_text(handle + "\n", encoding="utf-8")
+        os.chmod(args.handle_file, 0o600)
+    except OSError as exc:
+        raise OperatorError(f"cannot write media handle file: {exc}") from exc
+    print(f"Meta upload handle written to {args.handle_file}")
+    print("The handle value was not displayed.")
+    return 0
+
+
 def run_template_submit(args: argparse.Namespace) -> int:
     template = _load_template(args.file)
+    header_handle_file = getattr(args, "header_handle_file", None)
+    if header_handle_file is not None:
+        try:
+            handle = header_handle_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise OperatorError(f"cannot read media handle file: {exc}") from exc
+        if not handle:
+            raise OperatorError("media handle file is empty")
+        media_headers = [
+            component
+            for component in template["components"]
+            if str(component.get("type", "")).upper() == "HEADER"
+            and str(component.get("format", "")).upper()
+            in {"IMAGE", "VIDEO", "DOCUMENT"}
+        ]
+        if len(media_headers) != 1:
+            raise OperatorError(
+                "--header-handle-file requires exactly one media header"
+            )
+        media_headers[0].setdefault("example", {})["header_handle"] = [handle]
     print(f"Template: {template['name']} ({template['language']})")
     print(f"Category: {template['category']}")
     for component in template["components"]:
         component_type = str(component.get("type", "")).upper()
+        if component_type == "HEADER" and str(component.get("format", "")).upper() not in {
+            "",
+            "TEXT",
+        }:
+            print(f"Header: {str(component.get('format', '')).upper()}")
+            if header_handle_file is not None:
+                print("Header sample: supplied from owner-only handle file")
         if component_type in {"HEADER", "BODY", "FOOTER"} and component.get("text"):
             print(f"{component_type.title()}: {component['text']}")
         if component_type == "BUTTONS":
@@ -327,6 +430,20 @@ def run_template_submit(args: argparse.Namespace) -> int:
         return 0
     if not args.yes:
         raise OperatorError("non-interactive submission requires --submit --yes")
+    for component in template["components"]:
+        if (
+            str(component.get("type", "")).upper() == "HEADER"
+            and str(component.get("format", "")).upper() in {"IMAGE", "VIDEO", "DOCUMENT"}
+        ):
+            handles = component.get("example", {}).get("header_handle", [])
+            if (
+                not handles
+                or not isinstance(handles, list)
+                or any(str(handle).startswith("REPLACE_") for handle in handles)
+            ):
+                raise OperatorError(
+                    "media header submission requires a real Meta upload handle"
+                )
     env = _required_env("WHATSAPP_BUSINESS_ACCOUNT_ID")
     result = _meta_request(
         env["WHATSAPP_BUSINESS_ACCOUNT_ID"] + "/message_templates",
@@ -702,9 +819,18 @@ def register_operator_commands(subparsers: argparse._SubParsersAction) -> None:
     template_sub = template_parser.add_subparsers(dest="template_command", required=True)
     submit = template_sub.add_parser("submit")
     submit.add_argument("--file", type=Path, required=True)
+    submit.add_argument("--header-handle-file", type=Path)
     submit.add_argument("--submit", action="store_true")
     submit.add_argument("--yes", action="store_true")
     submit.set_defaults(func=run_template_submit)
+    media_upload = template_sub.add_parser(
+        "media-upload", help="upload an approved JPEG/PNG sample to Meta"
+    )
+    media_upload.add_argument("--file", type=Path, required=True)
+    media_upload.add_argument("--handle-file", type=Path)
+    media_upload.add_argument("--upload", action="store_true")
+    media_upload.add_argument("--yes", action="store_true")
+    media_upload.set_defaults(func=run_template_media_upload)
     template_status = template_sub.add_parser("status")
     template_status.add_argument("name")
     template_status.set_defaults(func=run_template_status)

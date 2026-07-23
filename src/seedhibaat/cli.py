@@ -181,8 +181,18 @@ def build_template_components(
     header_columns: Iterable[str],
     body_columns: Iterable[str],
     url_button_bindings: Iterable[tuple[int, str]],
+    header_image_url: str = "",
 ) -> list[dict[str, object]]:
     components: list[dict[str, object]] = []
+    if header_image_url:
+        components.append(
+            {
+                "type": "header",
+                "parameters": [
+                    {"type": "image", "image": {"link": header_image_url}}
+                ],
+            }
+        )
     header_parameters = [
         {"type": "text", "text": values[column]} for column in header_columns
     ]
@@ -265,18 +275,41 @@ def send_template(
         raise SeedhiBaatError(f"unexpected Meta response: {payload}") from exc
 
 
-def display_preview(recipients: Iterable[Recipient], template: str, language: str) -> None:
+def display_preview(
+    recipients: Iterable[Recipient],
+    template: str,
+    language: str,
+    header_image_url: str = "",
+) -> None:
     recipients = list(recipients)
     unique_phones = list(dict.fromkeys(recipient.phone for recipient in recipients))
     print(f"Template: {template} ({language})")
     print(f"Validated messages: {len(recipients)}")
     print(f"Unique valid recipients: {len(unique_phones)}")
+    if header_image_url:
+        print(f"Header image: {header_image_url}")
 
 
 def run_send(args: argparse.Namespace) -> int:
     header_columns = args.header_param or []
     body_columns = args.body_param or []
     url_button_bindings = args.url_button_param or []
+    header_image_url = (args.header_image_url or "").strip()
+    if header_image_url:
+        parsed_image_url = urllib.parse.urlparse(header_image_url)
+        if (
+            parsed_image_url.scheme != "https"
+            or not parsed_image_url.netloc
+            or parsed_image_url.username
+            or parsed_image_url.password
+        ):
+            raise SeedhiBaatError(
+                "header image must be an absolute HTTPS URL without credentials"
+            )
+        if header_columns:
+            raise SeedhiBaatError(
+                "an image header cannot be combined with text header parameters"
+            )
     button_indexes = [index for index, _ in url_button_bindings]
     duplicate_button_indexes = sorted(
         {index for index in button_indexes if button_indexes.count(index) > 1}
@@ -298,7 +331,9 @@ def run_send(args: argparse.Namespace) -> int:
         args.default_country_code
         or os.environ.get("SEEDHIBAAT_DEFAULT_COUNTRY_CODE", ""),
     )
-    display_preview(recipients, args.template, args.language)
+    display_preview(
+        recipients, args.template, args.language, header_image_url
+    )
     if not args.send:
         print("Dry run only. Add --send after reviewing the recipient count.")
         return 0
@@ -324,7 +359,11 @@ def run_send(args: argparse.Namespace) -> int:
 
     for recipient in recipients:
         components = build_template_components(
-            recipient.values, header_columns, body_columns, url_button_bindings
+            recipient.values,
+            header_columns,
+            body_columns,
+            url_button_bindings,
+            header_image_url,
         )
         key = idempotency_key(
             recipient.phone, args.template, args.language, components
@@ -378,6 +417,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send.add_argument("--template", required=True)
     send.add_argument("--language", default="en_US")
+    send.add_argument(
+        "--header-image-url",
+        help="public HTTPS JPEG or PNG supplied to an approved IMAGE header",
+    )
     send.add_argument(
         "--header-param",
         action="append",

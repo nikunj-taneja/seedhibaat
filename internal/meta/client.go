@@ -100,8 +100,13 @@ type MessageComponent struct {
 }
 
 type MessageParameter struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string        `json:"type"`
+	Text  string        `json:"text,omitempty"`
+	Image *MessageMedia `json:"image,omitempty"`
+}
+
+type MessageMedia struct {
+	Link string `json:"link"`
 }
 
 func NewClient(version, token, wabaID, phoneID string) *Client {

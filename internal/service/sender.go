@@ -23,6 +23,7 @@ type sendPayload struct {
 	Language          string              `json:"language"`
 	Category          string              `json:"category"`
 	TrackedURL        string              `json:"tracked_url,omitempty"`
+	HeaderImageURL    string              `json:"header_image_url,omitempty"`
 	Params            map[string]string   `json:"params,omitempty"`
 	Conditions        workflow.Conditions `json:"conditions,omitempty"`
 	FrequencyMessages int                 `json:"frequency_messages"`
@@ -281,7 +282,15 @@ func (p *Processor) renderTemplateParameters(ctx context.Context, payload sendPa
 	if err != nil {
 		return nil, "", err
 	}
-	if len(header) == 0 && len(body) == 0 {
+	if payload.HeaderImageURL != "" {
+		if len(header) != 0 {
+			return nil, "", errors.New("image headers cannot include text header parameters")
+		}
+		if err := workflow.ValidateHeaderImageURL(payload.HeaderImageURL); err != nil {
+			return nil, "", fmt.Errorf("invalid header image URL: %w", err)
+		}
+	}
+	if len(header) == 0 && len(body) == 0 && payload.HeaderImageURL == "" {
 		return nil, "", nil
 	}
 	values := map[string]string{}
@@ -346,8 +355,18 @@ func (p *Processor) renderTemplateParameters(ctx context.Context, payload sendPa
 		}
 		return value, nil
 	}
-	components := make([]meta.MessageComponent, 0, 2)
+	components := make([]meta.MessageComponent, 0, 3)
 	fingerprintParts := make([]string, 0, len(all))
+	if payload.HeaderImageURL != "" {
+		components = append(components, meta.MessageComponent{
+			Type: "header",
+			Parameters: []meta.MessageParameter{{
+				Type:  "image",
+				Image: &meta.MessageMedia{Link: payload.HeaderImageURL},
+			}},
+		})
+		fingerprintParts = append(fingerprintParts, "header.image\x00"+payload.HeaderImageURL)
+	}
 	for _, item := range []struct {
 		name     string
 		bindings []string

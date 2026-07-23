@@ -17,6 +17,7 @@ from seedhibaat.operator import (
     run_workflow_simulate,
     run_workflow_activate,
     run_secrets_init,
+    run_template_media_upload,
     run_template_submit,
 )
 
@@ -54,6 +55,135 @@ class TemplateOperatorTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(OperatorError, "MARKETING or UTILITY"):
                 _load_template(path)
+
+    def test_media_header_preview_and_placeholder_submission_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "template.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "name": "image_example",
+                        "language": "en_US",
+                        "category": "MARKETING",
+                        "components": [
+                            {
+                                "type": "HEADER",
+                                "format": "IMAGE",
+                                "example": {
+                                    "header_handle": [
+                                        "REPLACE_WITH_META_UPLOAD_HANDLE"
+                                    ]
+                                },
+                            },
+                            {"type": "BODY", "text": "Example message."},
+                        ],
+                    }
+                )
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    run_template_submit(
+                        argparse.Namespace(
+                            file=path,
+                            header_handle_file=None,
+                            submit=False,
+                            yes=False,
+                        )
+                    ),
+                    0,
+                )
+            self.assertIn("Header: IMAGE", output.getvalue())
+            with patch("seedhibaat.operator._meta_request") as request:
+                with self.assertRaisesRegex(OperatorError, "upload handle"):
+                    run_template_submit(
+                        argparse.Namespace(
+                            file=path,
+                            header_handle_file=None,
+                            submit=True,
+                            yes=True,
+                        )
+                    )
+            request.assert_not_called()
+
+            handle = Path(directory) / "handle"
+            handle.write_text("media-handle\n", encoding="utf-8")
+            with (
+                patch.dict(
+                    os.environ,
+                    {"WHATSAPP_BUSINESS_ACCOUNT_ID": "waba"},
+                ),
+                patch(
+                    "seedhibaat.operator._meta_request",
+                    return_value={"id": "template-id"},
+                ) as request,
+            ):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(
+                        run_template_submit(
+                            argparse.Namespace(
+                                file=path,
+                                header_handle_file=handle,
+                                submit=True,
+                                yes=True,
+                            )
+                        ),
+                        0,
+                    )
+            submitted = request.call_args.kwargs["payload"]
+            self.assertEqual(
+                submitted["components"][0]["example"]["header_handle"],
+                ["media-handle"],
+            )
+
+    def test_media_upload_is_dry_by_default_and_writes_handle_privately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "header.jpg"
+            image.write_bytes(b"\xff\xd8\xff" + b"image")
+            handle = Path(directory) / "handle"
+            output = io.StringIO()
+            with patch("seedhibaat.operator._meta_request") as request:
+                with redirect_stdout(output):
+                    self.assertEqual(
+                        run_template_media_upload(
+                            argparse.Namespace(
+                                file=image,
+                                handle_file=handle,
+                                upload=False,
+                                yes=False,
+                            )
+                        ),
+                        0,
+                    )
+            request.assert_not_called()
+            self.assertFalse(handle.exists())
+            with (
+                patch.dict(os.environ, {"META_APP_ID": "app"}),
+                patch(
+                    "seedhibaat.operator._meta_request",
+                    return_value={"id": "upload:session"},
+                ) as request,
+                patch(
+                    "seedhibaat.operator._meta_upload_bytes",
+                    return_value={"h": "media-handle"},
+                ) as upload,
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(
+                    run_template_media_upload(
+                        argparse.Namespace(
+                            file=image,
+                            handle_file=handle,
+                            upload=True,
+                            yes=True,
+                        )
+                    ),
+                    0,
+                )
+            request.assert_called_once()
+            upload.assert_called_once_with("upload:session", image.read_bytes())
+            self.assertEqual(handle.read_text().strip(), "media-handle")
+            self.assertEqual(os.stat(handle).st_mode & 0o777, 0o600)
 
 
 class CampaignSafetyTests(unittest.TestCase):

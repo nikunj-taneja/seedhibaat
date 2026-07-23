@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,14 +60,15 @@ type Conversion struct {
 }
 
 type Step struct {
-	ID         string            `yaml:"id"`
-	Wait       string            `yaml:"wait"`
-	Template   string            `yaml:"template"`
-	Language   string            `yaml:"language"`
-	Category   string            `yaml:"category"`
-	Params     map[string]string `yaml:"params"`
-	URL        string            `yaml:"tracked_url"`
-	Conditions Conditions        `yaml:"conditions"`
+	ID             string            `yaml:"id"`
+	Wait           string            `yaml:"wait"`
+	Template       string            `yaml:"template"`
+	Language       string            `yaml:"language"`
+	Category       string            `yaml:"category"`
+	HeaderImageURL string            `yaml:"header_image_url"`
+	Params         map[string]string `yaml:"params"`
+	URL            string            `yaml:"tracked_url"`
+	Conditions     Conditions        `yaml:"conditions"`
 }
 
 type Conditions struct {
@@ -179,8 +181,17 @@ func (d Definition) Validate() error {
 		if strings.ToUpper(step.Category) != "MARKETING" {
 			return fmt.Errorf("step %s must be explicitly categorized MARKETING", step.ID)
 		}
-		if _, err := OrderedParameterBindings(step.Params, "header"); err != nil {
+		headerBindings, err := OrderedParameterBindings(step.Params, "header")
+		if err != nil {
 			return fmt.Errorf("step %s header params: %w", step.ID, err)
+		}
+		if step.HeaderImageURL != "" {
+			if len(headerBindings) != 0 {
+				return fmt.Errorf("step %s cannot combine an image header with text header parameters", step.ID)
+			}
+			if err := ValidateHeaderImageURL(step.HeaderImageURL); err != nil {
+				return fmt.Errorf("step %s has invalid header_image_url: %w", step.ID, err)
+			}
 		}
 		if _, err := OrderedParameterBindings(step.Params, "body"); err != nil {
 			return fmt.Errorf("step %s body params: %w", step.ID, err)
@@ -207,6 +218,20 @@ func (d Definition) Validate() error {
 	}
 	if _, err := parseClock(d.QuietHours.End); err != nil {
 		return fmt.Errorf("invalid quiet_hours.end: %w", err)
+	}
+	return nil
+}
+
+func ValidateHeaderImageURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "https" || parsed.Host == "" {
+		return errors.New("must be an absolute HTTPS URL")
+	}
+	if parsed.User != nil {
+		return errors.New("must not contain credentials")
 	}
 	return nil
 }

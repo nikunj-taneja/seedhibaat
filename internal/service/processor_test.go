@@ -312,6 +312,29 @@ func TestWorkflowTemplateParametersRenderInMetaOrder(t *testing.T) {
 	}
 }
 
+func TestWorkflowImageHeaderRendersBeforeBodyParameters(t *testing.T) {
+	processor, database := testProcessor(t)
+	defer database.Close()
+	payload := sendPayload{
+		HeaderImageURL: "https://cdn.example.com/header.webp",
+		Params:         map[string]string{"body.1": "literal:750"},
+	}
+	components, fingerprint, err := processor.renderTemplateParameters(context.Background(), payload, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(components) != 2 || components[0].Type != "header" || components[1].Type != "body" {
+		t.Fatalf("components=%+v", components)
+	}
+	image := components[0].Parameters[0].Image
+	if image == nil || image.Link != payload.HeaderImageURL || components[0].Parameters[0].Type != "image" {
+		t.Fatalf("image header=%+v", components[0])
+	}
+	if components[1].Parameters[0].Text != "750" || fingerprint == "" {
+		t.Fatalf("body=%+v fingerprint_empty=%v", components[1], fingerprint == "")
+	}
+}
+
 func TestStepConditionStopsCustomerWhoAlreadyConverted(t *testing.T) {
 	processor, database := testProcessor(t)
 	defer database.Close()

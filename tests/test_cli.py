@@ -99,6 +99,35 @@ class ParameterTests(unittest.TestCase):
             ],
         )
 
+    def test_builds_image_header_before_body_parameters(self):
+        components = build_template_components(
+            {"price": "750"},
+            [],
+            ["price"],
+            [],
+            "https://cdn.example.com/header.jpg",
+        )
+        self.assertEqual(
+            components,
+            [
+                {
+                    "type": "header",
+                    "parameters": [
+                        {
+                            "type": "image",
+                            "image": {
+                                "link": "https://cdn.example.com/header.jpg"
+                            },
+                        }
+                    ],
+                },
+                {
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": "750"}],
+                },
+            ],
+        )
+
     def test_send_payload_includes_rendered_components(self):
         components = [
             {"type": "body", "parameters": [{"type": "text", "text": "A-1"}]}
@@ -190,6 +219,44 @@ class SafetyTests(unittest.TestCase):
             path.write_text(
                 "phone,first,second\n9876543210,a,b\n",
                 encoding="utf-8",
+            )
+
+    def test_rejects_insecure_or_conflicting_image_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recipients.csv"
+            path.write_text(
+                "phone,name\n9876543210,Asha\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "send",
+                        "--csv",
+                        str(path),
+                        "--template",
+                        "image_template",
+                        "--header-image-url",
+                        "http://cdn.example.com/header.jpg",
+                    ]
+                ),
+                2,
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "send",
+                        "--csv",
+                        str(path),
+                        "--template",
+                        "image_template",
+                        "--header-image-url",
+                        "https://cdn.example.com/header.jpg",
+                        "--header-param",
+                        "name",
+                    ]
+                ),
+                2,
             )
             self.assertEqual(
                 main(
