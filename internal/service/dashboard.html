@@ -14,22 +14,24 @@
         <span class="mark">SB</span>
         <span>SeedhiBaat</span>
       </a>
-      <div class="status">
-        <span class="pill">Read-only</span>
-        <span>Aggregate analytics</span>
-      </div>
     </header>
 
     <section class="hero card">
       <div>
         <p class="eyebrow">MESSAGE PERFORMANCE</p>
         <h1>Your WhatsApp analytics</h1>
-        <p class="lede">Delivery, observed reads, clicks, conversions, and attributed revenue—without exposing customer data.</p>
+        <p class="lede">Delivery, observed reads, clicks, conversions, and attributed revenue.</p>
       </div>
       <div class="range-card">
         <span class="label">REPORTING WINDOW</span>
         <strong>{{.RangeLabel}}</strong>
-        <span>{{.FromLabel}} – {{.ToLabel}} · {{.Timezone}}</span>
+        <span>{{.FromLabel}} – {{.ToLabel}}</span>
+        <nav class="segments" aria-label="Reporting range">
+          <a class="{{if eq .Range "7d"}}active{{end}}" href="/metrics?range=7d">7 days</a>
+          <a class="{{if eq .Range "30d"}}active{{end}}" href="/metrics?range=30d">30 days</a>
+          <a class="{{if eq .Range "90d"}}active{{end}}" href="/metrics?range=90d">90 days</a>
+          <a class="{{if eq .Range "all"}}active{{end}}" href="/metrics?range=all">All time</a>
+        </nav>
       </div>
       <div class="metric-grid">
         {{range .Cards}}
@@ -46,19 +48,6 @@
         <div><span>Conversions</span><strong>{{.Conversions}}</strong></div>
         <div><span>Conversion rate</span><strong>{{.ConversionRate}}</strong></div>
       </div>
-    </section>
-
-    <section class="range-strip card">
-      <div>
-        <h2>How your messages performed</h2>
-        <p>One time range controls every panel below.</p>
-      </div>
-      <nav class="segments" aria-label="Reporting range">
-        <a class="{{if eq .Range "7d"}}active{{end}}" href="/metrics?range=7d">7 days</a>
-        <a class="{{if eq .Range "30d"}}active{{end}}" href="/metrics?range=30d">30 days</a>
-        <a class="{{if eq .Range "90d"}}active{{end}}" href="/metrics?range=90d">90 days</a>
-        <a class="{{if eq .Range "all"}}active{{end}}" href="/metrics?range=all">All time</a>
-      </nav>
     </section>
 
     <section class="two-column">
@@ -96,6 +85,47 @@
           <p>Revenue is grouped by currency and never combines unlike currencies into one amount.</p>
         </div>
       </article>
+    </section>
+
+    <section class="card panel workflow-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Active workflows</h2>
+          <p>Durable workflow definitions currently enabled for new events.</p>
+        </div>
+        <span class="pill">{{len .Workflows}} active</span>
+      </div>
+      {{if .Workflows}}
+      <div class="workflow-grid">
+        {{range .Workflows}}
+        <article class="workflow-card">
+          <div class="workflow-title">
+            <div>
+              <span class="source-kind">Active</span>
+              <h3>{{.Name}}</h3>
+            </div>
+            <span class="version">v{{.Version}}</span>
+          </div>
+          <div class="workflow-meta">
+            <span>{{.Trigger}}</span>
+            <span>{{.Steps}} steps</span>
+          </div>
+          <dl>
+            <div><dt>Active recipients</dt><dd>{{.ActiveRecipients}}</dd></div>
+            <div><dt>Pending jobs</dt><dd>{{.PendingJobs}}</dd></div>
+            <div><dt>Next activity</dt><dd>{{.NextActivity}}</dd></div>
+            <div><dt>Delivered</dt><dd>{{.Delivered}}</dd></div>
+            <div><dt>Observed read</dt><dd>{{.ReadRate}}</dd></div>
+          </dl>
+        </article>
+        {{end}}
+      </div>
+      {{else}}
+      <div class="workflow-empty">
+        <h3>No active workflows</h3>
+        <p>Configured definitions appear here only after their audience and activation have been explicitly approved.</p>
+      </div>
+      {{end}}
     </section>
 
     <section class="card panel">

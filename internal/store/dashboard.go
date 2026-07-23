@@ -32,6 +32,17 @@ type PerformanceRow struct {
 	Currencies          string
 }
 
+type ActiveWorkflowRow struct {
+	Name             string
+	Version          int
+	YAML             string
+	ActiveRecipients int64
+	PendingJobs      int64
+	NextActivity     sql.NullString
+	Delivered        int64
+	ObservedRead     int64
+}
+
 func (s *Store) EarliestMessageTime(ctx context.Context) (time.Time, bool, error) {
 	var value sql.NullString
 	if err := s.DB.QueryRowContext(ctx, `SELECT min(created_at) FROM outbound_messages`).Scan(&value); err != nil {
@@ -152,6 +163,87 @@ func (s *Store) PerformanceBreakdown(ctx context.Context, from, to time.Time) ([
 			&row.Conversions,
 			&row.RevenueMinor,
 			&row.Currencies,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) ActiveWorkflowDashboard(ctx context.Context, from, to time.Time) ([]ActiveWorkflowRow, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT
+			wd.name,
+			wd.version,
+			wd.yaml,
+			(
+				SELECT count(DISTINCT wr.customer_id)
+				FROM workflow_runs wr
+				WHERE wr.workflow_name=wd.name
+					AND wr.workflow_version=wd.version
+					AND wr.state='active'
+			),
+			(
+				SELECT count(*)
+				FROM scheduled_jobs sj
+				JOIN workflow_runs wr ON wr.id=sj.workflow_run_id
+				WHERE wr.workflow_name=wd.name
+					AND wr.workflow_version=wd.version
+					AND sj.state IN ('scheduled','retry')
+			),
+			(
+				SELECT min(sj.available_at)
+				FROM scheduled_jobs sj
+				JOIN workflow_runs wr ON wr.id=sj.workflow_run_id
+				WHERE wr.workflow_name=wd.name
+					AND wr.workflow_version=wd.version
+					AND sj.state IN ('scheduled','retry')
+			),
+			(
+				SELECT count(*)
+				FROM outbound_messages m
+				JOIN workflow_runs wr ON wr.id=m.workflow_run_id
+				WHERE wr.workflow_name=wd.name
+					AND wr.workflow_version=wd.version
+					AND m.created_at>=?
+					AND m.created_at<?
+					AND m.delivered_at IS NOT NULL
+			),
+			(
+				SELECT count(*)
+				FROM outbound_messages m
+				JOIN workflow_runs wr ON wr.id=m.workflow_run_id
+				WHERE wr.workflow_name=wd.name
+					AND wr.workflow_version=wd.version
+					AND m.created_at>=?
+					AND m.created_at<?
+					AND m.read_at IS NOT NULL
+			)
+		FROM workflow_definitions wd
+		WHERE wd.active=1
+		ORDER BY wd.name`,
+		from.UTC().Format(time.RFC3339Nano),
+		to.UTC().Format(time.RFC3339Nano),
+		from.UTC().Format(time.RFC3339Nano),
+		to.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ActiveWorkflowRow
+	for rows.Next() {
+		var row ActiveWorkflowRow
+		if err := rows.Scan(
+			&row.Name,
+			&row.Version,
+			&row.YAML,
+			&row.ActiveRecipients,
+			&row.PendingJobs,
+			&row.NextActivity,
+			&row.Delivered,
+			&row.ObservedRead,
 		); err != nil {
 			return nil, err
 		}

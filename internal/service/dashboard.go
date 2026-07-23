@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nikunj-taneja/seedhibaat/internal/store"
+	"github.com/nikunj-taneja/seedhibaat/internal/workflow"
 )
 
 //go:embed dashboard.html
@@ -61,18 +62,30 @@ type dashboardRow struct {
 	Failed    int64
 }
 
+type dashboardWorkflow struct {
+	Name             string
+	Version          int
+	Trigger          string
+	Steps            int
+	ActiveRecipients int64
+	PendingJobs      int64
+	NextActivity     string
+	Delivered        int64
+	ReadRate         string
+}
+
 type dashboardView struct {
 	Title             string
 	Range             string
 	RangeLabel        string
 	FromLabel         string
 	ToLabel           string
-	Timezone          string
 	Retrieved         string
 	Cards             []dashboardCard
 	Funnel            []dashboardFunnelStep
 	Bars              []dashboardBar
 	Rows              []dashboardRow
+	Workflows         []dashboardWorkflow
 	AttributionWindow string
 	Revenue           string
 	Conversions       int64
@@ -158,13 +171,18 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "metrics unavailable", http.StatusInternalServerError)
 		return
 	}
+	activeWorkflows, err := s.Store.ActiveWorkflowDashboard(r.Context(), from, now)
+	if err != nil {
+		s.Logger.Error("dashboard active workflows", "error", err)
+		http.Error(w, "metrics unavailable", http.StatusInternalServerError)
+		return
+	}
 	view := dashboardView{
 		Title:             "SeedhiBaat analytics",
 		Range:             rangeName,
 		RangeLabel:        rangeLabel,
 		FromLabel:         from.In(location).Format("2 Jan 2006"),
 		ToLabel:           now.In(location).Format("2 Jan 2006"),
-		Timezone:          s.Config.ReportTimezone,
 		Retrieved:         now.In(location).Format("3:04 PM"),
 		AttributionWindow: humanDuration(s.Config.AttributionWindow),
 		Revenue:           formatRevenue(metrics.RevenueByCurrency),
@@ -219,6 +237,34 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 			Converted: item.ConvertedRecipients,
 			Revenue:   revenue,
 			Failed:    item.Failed,
+		})
+	}
+	for _, item := range activeWorkflows {
+		loaded, err := workflow.Parse("database:"+item.Name, []byte(item.YAML))
+		if err != nil {
+			s.Logger.Error("dashboard workflow definition", "workflow", item.Name, "error", err)
+			continue
+		}
+		readRate := 0.0
+		if item.Delivered > 0 {
+			readRate = float64(item.ObservedRead) / float64(item.Delivered)
+		}
+		nextActivity := "Waiting for trigger"
+		if item.NextActivity.Valid {
+			if next, err := time.Parse(time.RFC3339Nano, item.NextActivity.String); err == nil {
+				nextActivity = next.In(location).Format("2 Jan, 3:04 PM")
+			}
+		}
+		view.Workflows = append(view.Workflows, dashboardWorkflow{
+			Name:             item.Name,
+			Version:          item.Version,
+			Trigger:          humanizeIdentifier(loaded.Definition.Trigger.Type),
+			Steps:            len(loaded.Definition.Steps),
+			ActiveRecipients: item.ActiveRecipients,
+			PendingJobs:      item.PendingJobs,
+			NextActivity:     nextActivity,
+			Delivered:        item.Delivered,
+			ReadRate:         percent(readRate),
 		})
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -321,4 +367,8 @@ func humanDuration(value time.Duration) string {
 		return fmt.Sprintf("%d-day last-touch", days)
 	}
 	return value.String() + " last-touch"
+}
+
+func humanizeIdentifier(value string) string {
+	return strings.Title(strings.ReplaceAll(value, "_", " "))
 }

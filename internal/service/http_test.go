@@ -95,6 +95,32 @@ func TestMetricsDashboardIsReadOnlyAuthenticatedAndPrivate(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,first_name_ciphertext,created_at,updated_at) VALUES(1,'private-customer',x'0102',x'0304',?,?)`, now, now)
 	_, _ = db.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,template_name,template_language,category,idempotency_key,state,attempted_at,accepted_at,sent_at,delivered_at,read_at,created_at,updated_at) VALUES('message',1,'welcome','en_US','MARKETING','key','read',?,?,?,?,?,?,?)`, now, now, now, now, now, now, now)
+	workflowYAML := `name: example_followup
+version: 1
+description: Example
+enabled: false
+timezone: UTC
+trigger:
+  type: order_delivered
+audience:
+  require_whatsapp_consent: true
+quiet_hours:
+  start: "21:00"
+  end: "09:00"
+frequency_cap:
+  messages: 1
+  window: 24h
+conversion: {}
+steps:
+  - id: follow_up
+    wait: 1d
+    template: example
+    language: en_US
+    category: MARKETING
+`
+	_, _ = db.DB.Exec(`INSERT INTO workflow_definitions(name,version,definition_hash,yaml,active,created_at) VALUES('example_followup',1,'hash',?,1,?)`, workflowYAML, now)
+	_, _ = db.DB.Exec(`INSERT INTO workflow_runs(id,workflow_name,workflow_version,customer_id,trigger_type,trigger_id,state,started_at) VALUES('workflow-run','example_followup',1,1,'order_delivered','order','active',?)`, now)
+	_, _ = db.DB.Exec(`INSERT INTO scheduled_jobs(id,workflow_run_id,step_id,idempotency_key,kind,payload,state,scheduled_at,available_at,created_at,updated_at) VALUES('workflow-job','workflow-run','follow_up','workflow-key','send_template',x'00','scheduled',?,?,?,?)`, now, now, now, now)
 
 	request := httptest.NewRequest(http.MethodGet, "/metrics?range=7d", nil)
 	response := httptest.NewRecorder()
@@ -111,7 +137,7 @@ func TestMetricsDashboardIsReadOnlyAuthenticatedAndPrivate(t *testing.T) {
 		t.Fatalf("dashboard code=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, "Your WhatsApp analytics") || !strings.Contains(body, "Performance ledger") {
+	if !strings.Contains(body, "Your WhatsApp analytics") || !strings.Contains(body, "Performance ledger") || !strings.Contains(body, "Active workflows") || !strings.Contains(body, "example_followup") {
 		t.Fatalf("dashboard missing expected content")
 	}
 	if strings.Contains(body, "private-customer") || strings.Contains(body, "0102") || strings.Contains(body, "0304") {
