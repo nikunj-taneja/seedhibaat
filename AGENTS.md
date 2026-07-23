@@ -8,7 +8,6 @@ optional read-only aggregate metrics dashboard.
 ## Operating rules
 
 - `AGENTS.md` is the canonical project instruction file.
-- Canonical project skills live in `.agents/skills/`.
 - Use the tracked `.sbconfig.example/` bundle to understand the shape of a
   deployment. Copy it to the ignored `.sbconfig/` directory before adding any
   real business identifiers, templates, workflows, or migration notes.
@@ -69,5 +68,4 @@ Run the no-network load test with:
 go run ./cmd/seedhibaat-loadtest 10000
 ```
 
-The SeedhiBaat skill is only a discovery router. See `docs/runbook.md` for
-operator and production procedures.
+See `docs/runbook.md` for operator and production procedures.
