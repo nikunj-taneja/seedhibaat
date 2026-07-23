@@ -65,6 +65,35 @@ func TestMetricsCanBeFilteredByCampaign(t *testing.T) {
 	}
 }
 
+func TestMetricsUseUniqueRecipientsAndSeparateCurrencies(t *testing.T) {
+	s, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC()
+	stamp := now.Format(time.RFC3339Nano)
+	for id := 1; id <= 2; id++ {
+		_, _ = s.DB.Exec(`INSERT INTO customers(id,shopify_id,created_at,updated_at) VALUES(?,?,?,?)`, id, fmt.Sprintf("customer-%d", id), stamp, stamp)
+		_, _ = s.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,template_name,template_language,category,idempotency_key,state,accepted_at,delivered_at,created_at,updated_at) VALUES(?,?,?,?,? ,?,'delivered',?,?,?,?)`, fmt.Sprintf("message-%d", id), id, "template", "en_US", "MARKETING", fmt.Sprintf("key-%d", id), stamp, stamp, stamp, stamp)
+	}
+	for id := 1; id <= 2; id++ {
+		orderID := fmt.Sprintf("order-%d", id)
+		_, _ = s.DB.Exec(`INSERT INTO orders(shopify_id,customer_id,currency,total_amount_minor,created_at,updated_at) VALUES(?,1,'INR',10000,?,?)`, orderID, stamp, stamp)
+		_, _ = s.DB.Exec(`INSERT INTO conversions(order_id,message_id,attributed_at,amount_minor,currency,attribution_model) VALUES(?,'message-1',?,10000,'INR','last_touch')`, orderID, stamp)
+	}
+	metrics, err := s.Metrics(context.Background(), now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Conversions != 2 || metrics.ConvertedRecipients != 1 || metrics.ConversionRate != 0.5 {
+		t.Fatalf("unexpected conversion metrics: %+v", metrics)
+	}
+	if len(metrics.RevenueByCurrency) != 1 || metrics.RevenueByCurrency[0].Currency != "INR" || metrics.RevenueByCurrency[0].AmountMinor != 20000 {
+		t.Fatalf("unexpected currency revenue: %+v", metrics.RevenueByCurrency)
+	}
+}
+
 func TestWebhookAndJobDeduplication(t *testing.T) {
 	s, err := Open(context.Background(), ":memory:")
 	if err != nil {

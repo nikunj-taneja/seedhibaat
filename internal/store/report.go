@@ -14,25 +14,32 @@ type MetricsFilter struct {
 }
 
 type Metrics struct {
-	From                string  `json:"from"`
-	To                  string  `json:"to"`
-	Attempted           int64   `json:"attempted"`
-	Accepted            int64   `json:"accepted"`
-	Sent                int64   `json:"sent"`
-	Delivered           int64   `json:"delivered"`
-	DeliveredRecipients int64   `json:"delivered_recipients"`
-	ObservedRead        int64   `json:"observed_read"`
-	Failed              int64   `json:"failed"`
-	Replies             int64   `json:"replies"`
-	Clicks              int64   `json:"clicks"`
-	UniqueClicks        int64   `json:"unique_clicks"`
-	OptOuts             int64   `json:"opt_outs"`
-	Conversions         int64   `json:"conversions"`
-	RevenueMinor        int64   `json:"revenue_minor"`
-	DeliveryRate        float64 `json:"delivery_rate"`
-	ObservedReadRate    float64 `json:"observed_read_rate"`
-	UniqueCTR           float64 `json:"unique_ctr"`
-	ConversionRate      float64 `json:"conversion_rate"`
+	From                string           `json:"from"`
+	To                  string           `json:"to"`
+	Attempted           int64            `json:"attempted"`
+	Accepted            int64            `json:"accepted"`
+	Sent                int64            `json:"sent"`
+	Delivered           int64            `json:"delivered"`
+	DeliveredRecipients int64            `json:"delivered_recipients"`
+	ObservedRead        int64            `json:"observed_read"`
+	Failed              int64            `json:"failed"`
+	Replies             int64            `json:"replies"`
+	Clicks              int64            `json:"clicks"`
+	UniqueClicks        int64            `json:"unique_clicks"`
+	OptOuts             int64            `json:"opt_outs"`
+	Conversions         int64            `json:"conversions"`
+	ConvertedRecipients int64            `json:"converted_recipients"`
+	RevenueMinor        int64            `json:"revenue_minor"`
+	RevenueByCurrency   []CurrencyAmount `json:"revenue_by_currency"`
+	DeliveryRate        float64          `json:"delivery_rate"`
+	ObservedReadRate    float64          `json:"observed_read_rate"`
+	UniqueCTR           float64          `json:"unique_ctr"`
+	ConversionRate      float64          `json:"conversion_rate"`
+}
+
+type CurrencyAmount struct {
+	Currency    string `json:"currency"`
+	AmountMinor int64  `json:"amount_minor"`
 }
 
 func (s *Store) Metrics(ctx context.Context, from, to time.Time) (Metrics, error) {
@@ -103,10 +110,26 @@ func (s *Store) MetricsFiltered(ctx context.Context, from, to time.Time, filter 
 		conversionArgs = append(conversionArgs, filter.WorkflowName)
 	}
 	if filter.TemplateName != "" {
-		conversionConditions = append(conversionConditions, "EXISTS (SELECT 1 FROM outbound_messages m WHERE m.id=c.message_id AND m.template_name=?)")
+		conversionConditions = append(conversionConditions, "m.template_name=?")
 		conversionArgs = append(conversionArgs, filter.TemplateName)
 	}
-	if err := s.DB.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(c.amount_minor),0) FROM conversions c WHERE `+strings.Join(conversionConditions, " AND "), conversionArgs...).Scan(&m.Conversions, &m.RevenueMinor); err != nil {
+	conversionFrom := ` FROM conversions c LEFT JOIN outbound_messages m ON m.id=c.message_id WHERE ` + strings.Join(conversionConditions, " AND ")
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*),count(DISTINCT m.customer_id),coalesce(sum(c.amount_minor),0)`+conversionFrom, conversionArgs...).Scan(&m.Conversions, &m.ConvertedRecipients, &m.RevenueMinor); err != nil {
+		return Metrics{}, err
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT c.currency,coalesce(sum(c.amount_minor),0)`+conversionFrom+` GROUP BY c.currency ORDER BY c.currency`, conversionArgs...)
+	if err != nil {
+		return Metrics{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var amount CurrencyAmount
+		if err := rows.Scan(&amount.Currency, &amount.AmountMinor); err != nil {
+			return Metrics{}, err
+		}
+		m.RevenueByCurrency = append(m.RevenueByCurrency, amount)
+	}
+	if err := rows.Err(); err != nil {
 		return Metrics{}, err
 	}
 	if m.Accepted > 0 {
@@ -114,10 +137,10 @@ func (s *Store) MetricsFiltered(ctx context.Context, from, to time.Time, filter 
 	}
 	if m.Delivered > 0 {
 		m.ObservedReadRate = float64(m.ObservedRead) / float64(m.Delivered)
-		m.ConversionRate = float64(m.Conversions) / float64(m.Delivered)
 	}
 	if m.DeliveredRecipients > 0 {
 		m.UniqueCTR = float64(m.UniqueClicks) / float64(m.DeliveredRecipients)
+		m.ConversionRate = float64(m.ConvertedRecipients) / float64(m.DeliveredRecipients)
 	}
 	return m, nil
 }

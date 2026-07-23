@@ -74,6 +74,12 @@ Use `--campaign`, `--workflow`, or `--template` to filter a report. Set the
 last-touch purchase window with `SEEDHIBAAT_ATTRIBUTION_WINDOW` (default
 `720h`).
 
+The optional `/metrics` dashboard uses independent Basic Auth credentials from
+`SEEDHIBAAT_METRICS_USERNAME` and `SEEDHIBAAT_METRICS_PASSWORD`. Keep the
+password owner-only and at least 32 characters. `SEEDHIBAAT_REPORT_TIMEZONE`
+controls date labels. The dashboard is aggregate, read-only, and never exposes
+customer records or state-changing controls.
+
 ## Shopify reconciliation
 
 The daemon reconciles Shopify once immediately at startup and then at

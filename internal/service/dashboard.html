@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/metrics/assets/dashboard.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/metrics">
+        <span class="mark">SB</span>
+        <span>SeedhiBaat</span>
+      </a>
+      <div class="status">
+        <span class="pill">Read-only</span>
+        <span>Aggregate analytics</span>
+      </div>
+    </header>
+
+    <section class="hero card">
+      <div>
+        <p class="eyebrow">MESSAGE PERFORMANCE</p>
+        <h1>Your WhatsApp analytics</h1>
+        <p class="lede">Delivery, observed reads, clicks, conversions, and attributed revenue—without exposing customer data.</p>
+      </div>
+      <div class="range-card">
+        <span class="label">REPORTING WINDOW</span>
+        <strong>{{.RangeLabel}}</strong>
+        <span>{{.FromLabel}} – {{.ToLabel}} · {{.Timezone}}</span>
+      </div>
+      <div class="metric-grid">
+        {{range .Cards}}
+        <article class="metric">
+          <span class="metric-label"><i class="{{.Tone}}"></i>{{.Label}}</span>
+          <strong>{{.Value}}</strong>
+          <small>{{.Note}}</small>
+        </article>
+        {{end}}
+      </div>
+      <div class="compact-grid">
+        <div><span>Replies</span><strong>{{.Replies}}</strong></div>
+        <div><span>Opt-outs</span><strong>{{.OptOuts}}</strong></div>
+        <div><span>Conversions</span><strong>{{.Conversions}}</strong></div>
+        <div><span>Conversion rate</span><strong>{{.ConversionRate}}</strong></div>
+      </div>
+    </section>
+
+    <section class="range-strip card">
+      <div>
+        <h2>How your messages performed</h2>
+        <p>One time range controls every panel below.</p>
+      </div>
+      <nav class="segments" aria-label="Reporting range">
+        <a class="{{if eq .Range "7d"}}active{{end}}" href="/metrics?range=7d">7 days</a>
+        <a class="{{if eq .Range "30d"}}active{{end}}" href="/metrics?range=30d">30 days</a>
+        <a class="{{if eq .Range "90d"}}active{{end}}" href="/metrics?range=90d">90 days</a>
+        <a class="{{if eq .Range "all"}}active{{end}}" href="/metrics?range=all">All time</a>
+      </nav>
+    </section>
+
+    <section class="two-column">
+      <article class="card panel">
+        <div class="panel-head">
+          <div>
+            <h2>Message journey</h2>
+            <p>Provider state funnel from attempt to attributed conversion.</p>
+          </div>
+          <span class="legend"><i class="green-square"></i>Verified event</span>
+        </div>
+        <div class="funnel">
+          {{range .Funnel}}
+          <div class="funnel-row">
+            <span>{{.Label}}</span>
+            <progress max="{{.Max}}" value="{{.Value}}"></progress>
+            <strong>{{.Value}}</strong>
+          </div>
+          {{end}}
+        </div>
+        <p class="footnote">Accepted is not delivered. Read counts include only observed read receipts.</p>
+      </article>
+
+      <article class="card panel attribution">
+        <p class="eyebrow">ATTRIBUTION</p>
+        <h2>Revenue influenced by WhatsApp</h2>
+        <strong class="big">{{.Revenue}}</strong>
+        <p>Attributed using {{.AttributionWindow}}.</p>
+        <div class="attribution-grid">
+          <div><span>Converted recipients</span><strong>{{.Conversions}}</strong></div>
+          <div><span>Conversion rate</span><strong>{{.ConversionRate}}</strong></div>
+        </div>
+        <div class="notice">
+          <strong>How to read this</strong>
+          <p>Revenue is grouped by currency and never combines unlike currencies into one amount.</p>
+        </div>
+      </article>
+    </section>
+
+    <section class="card panel">
+      <div class="panel-head">
+        <div>
+          <h2>Daily delivery trend</h2>
+          <p>Delivered messages and unique clickers by message cohort; latest 30 days of the selected range.</p>
+        </div>
+        <div class="legend"><i class="green-square"></i>Delivered <i class="blue-square"></i>Unique clickers</div>
+      </div>
+      <div class="chart-wrap">
+        <svg class="bar-chart" viewBox="0 0 960 220" role="img" aria-label="Daily delivered messages and unique clickers">
+          <line x1="50" y1="178" x2="930" y2="178"></line>
+          <line x1="50" y1="128" x2="930" y2="128"></line>
+          <line x1="50" y1="78" x2="930" y2="78"></line>
+          {{range .Bars}}
+          <rect class="delivered" x="{{.X}}" y="{{.Y}}" width="9" height="{{.Height}}" rx="4"><title>{{.Label}}: {{.Delivered}} delivered</title></rect>
+          <rect class="clicked" x="{{.X}}" y="{{.ClickY}}" width="4" height="{{.ClickH}}" rx="2"><title>{{.Label}}: {{.Clicks}} unique clickers</title></rect>
+          {{if .ShowLabel}}<text x="{{.X}}" y="202">{{.Label}}</text>{{end}}
+          {{end}}
+        </svg>
+      </div>
+    </section>
+
+    <section class="card panel ledger">
+      <div class="panel-head">
+        <div>
+          <h2>Performance ledger</h2>
+          <p>Aggregate results by campaign or workflow and template. No recipients or private parameters are shown.</p>
+        </div>
+        <span class="pill">Retrieved {{.Retrieved}}</span>
+      </div>
+      {{if .Empty}}
+      <div class="empty">
+        <span class="mark muted">SB</span>
+        <h3>No message activity in this range</h3>
+        <p>The dashboard is ready; verified Meta and Shopify events will appear here after sends begin.</p>
+      </div>
+      {{else}}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th><th>Template</th><th>Accepted</th><th>Delivered</th><th>Read</th><th>Clicks</th><th>CTR</th><th>Converted</th><th>Revenue</th><th>Failed</th>
+            </tr>
+          </thead>
+          <tbody>
+          {{range .Rows}}
+            <tr>
+              <td><span class="source-kind">{{.Kind}}</span><strong>{{.Name}}</strong></td>
+              <td><code>{{.Template}}</code></td>
+              <td>{{.Accepted}}</td><td>{{.Delivered}}</td><td>{{.ReadRate}}</td><td>{{.Clicks}}</td><td>{{.CTR}}</td><td>{{.Converted}}</td><td><strong>{{.Revenue}}</strong></td><td>{{.Failed}}</td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{end}}
+    </section>
+
+    <footer>SeedhiBaat · aggregate, read-only reporting</footer>
+  </main>
+</body>
+</html>

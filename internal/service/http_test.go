@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,44 @@ func TestMetaVerificationAndAPIAuth(t *testing.T) {
 	handler.ServeHTTP(response, req)
 	if response.Code != 401 {
 		t.Fatalf("code=%d", response.Code)
+	}
+}
+
+func TestMetricsDashboardIsReadOnlyAuthenticatedAndPrivate(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.MetricsEnabled = true
+	server.Config.MetricsUsername = "operator"
+	server.Config.MetricsPassword = "a-very-long-dashboard-password-value"
+	server.Config.ReportTimezone = "UTC"
+	server.Config.AttributionWindow = 30 * 24 * time.Hour
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,first_name_ciphertext,created_at,updated_at) VALUES(1,'private-customer',x'0102',x'0304',?,?)`, now, now)
+	_, _ = db.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,template_name,template_language,category,idempotency_key,state,attempted_at,accepted_at,sent_at,delivered_at,read_at,created_at,updated_at) VALUES('message',1,'welcome','en_US','MARKETING','key','read',?,?,?,?,?,?,?)`, now, now, now, now, now, now, now)
+
+	request := httptest.NewRequest(http.MethodGet, "/metrics?range=7d", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated code=%d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/metrics?range=7d", nil)
+	request.SetBasicAuth("operator", "a-very-long-dashboard-password-value")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dashboard code=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "Your WhatsApp analytics") || !strings.Contains(body, "Performance ledger") {
+		t.Fatalf("dashboard missing expected content")
+	}
+	if strings.Contains(body, "private-customer") || strings.Contains(body, "0102") || strings.Contains(body, "0304") {
+		t.Fatalf("dashboard leaked private customer data")
+	}
+	if response.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("cache control=%q", response.Header().Get("Cache-Control"))
 	}
 }
 

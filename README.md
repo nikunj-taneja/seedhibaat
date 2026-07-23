@@ -9,8 +9,9 @@ attribution, and command-line operations.
 It is not a Meta Business Solution Provider and does not bypass Meta template
 review, conversation billing, consent rules, or messaging policies.
 
-There is no browser UI. A Python CLI is the operator interface; a Go daemon
-receives webhooks and runs durable work from SQLite.
+There is no state-changing browser UI. A Python CLI is the operator interface;
+a Go daemon receives webhooks, runs durable work from SQLite, and optionally
+serves an authenticated, read-only aggregate metrics dashboard.
 
 ## Capabilities
 
@@ -31,6 +32,8 @@ receives webhooks and runs durable work from SQLite.
   attribution
 - Run with SQLite WAL, migrations, integrity checks, encrypted backups,
   structured logs, Nginx, systemd, and no external queue service
+- View an optional read-only dashboard for delivery, observed reads, unique
+  CTR, conversions, and currency-safe attributed revenue
 
 Production sending and production workflow activation are independent gates
 and both default to off. Meta API acceptance is never reported as delivery.
@@ -349,6 +352,22 @@ Observed-read is not an exact open rate because recipients can disable read
 receipts. Signed redirects provide exact unique-click attribution for tracked
 buttons.
 
+### Read-only dashboard
+
+Enable the optional aggregate dashboard with:
+
+```dotenv
+SEEDHIBAAT_METRICS_ENABLED=true
+SEEDHIBAAT_METRICS_USERNAME=operator
+SEEDHIBAAT_METRICS_PASSWORD=<independent-random-secret>
+SEEDHIBAAT_REPORT_TIMEZONE=UTC
+```
+
+It is served at `/metrics` using HTTPS Basic authentication. It contains no
+phone numbers, customer names, order details, rendered parameters, send
+buttons, activation controls, or replay actions. The Python CLI remains the
+only state-changing operator interface.
+
 ## Development
 
 ```bash
@@ -366,7 +385,7 @@ The load test does not contact Meta or Shopify.
 
 The reference deployment uses a dedicated Linux user, loopback-only Go
 service, Nginx, Let's Encrypt, systemd, SQLite WAL, and encrypted backups. It
-does not install a browser UI or a separate queue service. Follow the
+does not install a separate queue or analytics service. Follow the
 [production runbook](docs/runbook.md) and keep every real hostname, storefront
 allowlist, provider identifier, and business workflow in ignored local/server
 configuration.

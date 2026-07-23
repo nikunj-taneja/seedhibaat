@@ -42,6 +42,10 @@ type Config struct {
 	OutboundSendingEnabled bool
 	RetentionDays          int
 	AttributionWindow      time.Duration
+	MetricsEnabled         bool
+	MetricsUsername        string
+	MetricsPassword        string
+	ReportTimezone         string
 }
 
 func Load() (Config, error) {
@@ -77,6 +81,10 @@ func Load() (Config, error) {
 		OutboundSendingEnabled: envBool("SEEDHIBAAT_OUTBOUND_SENDING_ENABLED", false),
 		RetentionDays:          envInt("SEEDHIBAAT_RETENTION_DAYS", 365),
 		AttributionWindow:      envDuration("SEEDHIBAAT_ATTRIBUTION_WINDOW", 30*24*time.Hour),
+		MetricsEnabled:         envBool("SEEDHIBAAT_METRICS_ENABLED", false),
+		MetricsUsername:        env("SEEDHIBAAT_METRICS_USERNAME", "operator"),
+		MetricsPassword:        os.Getenv("SEEDHIBAAT_METRICS_PASSWORD"),
+		ReportTimezone:         env("SEEDHIBAAT_REPORT_TIMEZONE", "UTC"),
 	}
 	if c.WorkerConcurrency < 1 || c.WorkerConcurrency > 32 {
 		return Config{}, errors.New("SEEDHIBAAT_WORKER_CONCURRENCY must be between 1 and 32")
@@ -92,6 +100,9 @@ func Load() (Config, error) {
 	}
 	if c.ReconcileOverlap < 0 || c.ReconcileOverlap > 30*24*time.Hour {
 		return Config{}, errors.New("SEEDHIBAAT_RECONCILE_OVERLAP must be between 0 and 720h")
+	}
+	if _, err := time.LoadLocation(c.ReportTimezone); err != nil {
+		return Config{}, fmt.Errorf("SEEDHIBAAT_REPORT_TIMEZONE is invalid: %w", err)
 	}
 	return c, nil
 }
@@ -130,6 +141,14 @@ func (c Config) ValidateForServe() error {
 	}
 	if len(c.RedirectAllowedHosts) == 0 {
 		return errors.New("SEEDHIBAAT_REDIRECT_ALLOWED_HOSTS must contain at least one hostname")
+	}
+	if c.MetricsEnabled {
+		if strings.TrimSpace(c.MetricsUsername) == "" {
+			return errors.New("SEEDHIBAAT_METRICS_USERNAME is required when metrics are enabled")
+		}
+		if len(c.MetricsPassword) < 32 {
+			return errors.New("SEEDHIBAAT_METRICS_PASSWORD must contain at least 32 characters when metrics are enabled")
+		}
 	}
 	return nil
 }

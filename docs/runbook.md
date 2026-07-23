@@ -128,9 +128,14 @@ certbot --nginx -d wa.example.com
 nginx -t
 ```
 
-The public virtual host exposes only health, two webhook endpoints and tracked
-redirects. The authenticated operator API remains accessible only on the VPS
-loopback interface.
+The public virtual host exposes health, two webhook endpoints, tracked
+redirects, and—when explicitly enabled—the independently authenticated
+read-only metrics dashboard. The state-changing operator API remains
+accessible only on the VPS loopback interface.
+
+Generate a separate dashboard password with `seedhibaat secrets init`, set
+`SEEDHIBAAT_METRICS_ENABLED=true`, and expose only `/metrics` plus its static
+asset path through Nginx. Do not reuse the operator API key.
 
 ## First start
 

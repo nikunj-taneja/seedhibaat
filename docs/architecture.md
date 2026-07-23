@@ -1,8 +1,9 @@
 # Architecture
 
 SeedhiBaat deliberately uses one small Go process, one SQLite database, and the
-existing Nginx host. Python remains the human-facing CLI. There is no web UI or
-separate queue service.
+existing Nginx host. Python remains the state-changing human-facing CLI. The
+only browser surface is an optional authenticated, read-only aggregate metrics
+dashboard; there is no separate queue or analytics service.
 
 ```text
 Shopify webhooks ─┐
@@ -17,6 +18,7 @@ Meta Cloud API <──────── bounded outbound workers <─ queue
 Customer click ─> signed /r/ link ─> click event ────┘
 
 Python CLI ─> authenticated loopback JSON API ─> previews, reports and controls
+Browser ─> Basic Auth ─> aggregate read-only /metrics dashboard
 ```
 
 ## Failure boundaries
@@ -66,6 +68,8 @@ rendered parameter sequence is retained.
 - Raw webhook bodies are retained only until successful processing and then
   replaced by their digest.
 - Reports and previews contain aggregate counts only.
+- The optional dashboard uses independent credentials, contains aggregate
+  results only, and exposes no state-changing actions.
 - Redirect tokens are signed, expiring and mapped to a server-side HTTPS
   destination allowlist. They contain no customer identifier.
 - Nginx access logging is disabled for Meta verification and tracked redirects

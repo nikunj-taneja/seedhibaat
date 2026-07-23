@@ -34,6 +34,8 @@ func (s *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("POST /webhooks/meta", s.metaWebhook)
 	mux.HandleFunc("POST /webhooks/shopify", s.shopifyWebhook)
 	mux.HandleFunc("GET /r/{token}", s.redirect)
+	mux.Handle("GET /metrics", s.metricsAuthenticated(http.HandlerFunc(s.dashboard)))
+	mux.Handle("GET /metrics/assets/dashboard.css", s.metricsAuthenticated(http.HandlerFunc(s.dashboardStyles)))
 	mux.Handle("/api/v1/", s.authenticated(s.apiMux()))
 	return s.securityHeaders(s.requestLog(mux))
 }
@@ -739,7 +741,7 @@ func (s *HTTPServer) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

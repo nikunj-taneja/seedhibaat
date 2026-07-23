@@ -2,8 +2,8 @@
 
 SeedhiBaat is a self-hosted WhatsApp marketing automation system. Its Python
 CLI is the operator interface; its Go daemon receives Meta and Shopify
-webhooks, runs durable YAML workflows, and stores state in SQLite. There is no
-browser UI.
+webhooks, runs durable YAML workflows, stores state in SQLite, and can serve an
+optional read-only aggregate metrics dashboard.
 
 ## Operating rules
 
@@ -43,6 +43,9 @@ browser UI.
   `SEEDHIBAAT_PRODUCTION_FLOW_ENABLED=false`.
 - Preview and report commands must never display phone numbers, decrypted PII,
   or rendered private template parameters.
+- The metrics dashboard is aggregate and read-only. Never add customer PII or
+  state-changing campaign, workflow, template, replay, or send controls to it;
+  the Python CLI remains the sole operator interface.
 - Preserve unrelated host services. SeedhiBaat owns only its dedicated service,
   user, directories, loopback port, and reverse-proxy virtual host.
 - Preserve the verified test WABA/phone profile separately from the active
