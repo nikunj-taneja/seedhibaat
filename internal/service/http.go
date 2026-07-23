@@ -48,6 +48,7 @@ func (s *HTTPServer) apiMux() http.Handler {
 	mux.HandleFunc("POST /api/v1/workflows/{name}/activate", s.activateWorkflow)
 	mux.HandleFunc("POST /api/v1/workflows/{name}/pause", s.pauseWorkflowDefinition)
 	mux.HandleFunc("POST /api/v1/workflows/validate", s.validateWorkflow)
+	mux.HandleFunc("POST /api/v1/workflows/simulate", s.simulateWorkflow)
 	mux.HandleFunc("POST /api/v1/workflows/reload", s.reloadWorkflows)
 	mux.HandleFunc("POST /api/v1/runs/{id}/pause", s.pauseRun)
 	mux.HandleFunc("POST /api/v1/runs/{id}/resume", s.resumeRun)
@@ -323,6 +324,89 @@ func (s *HTTPServer) validateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"valid": true, "name": loaded.Definition.Name, "version": loaded.Definition.Version, "definition_hash": loaded.Hash})
 }
+
+func (s *HTTPServer) simulateWorkflow(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		YAML        string `json:"yaml"`
+		TriggeredAt string `json:"triggered_at"`
+		AsOf        string `json:"as_of"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	loaded, err := workflow.Parse("simulation", []byte(request.YAML))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	triggeredAt, err := time.Parse(time.RFC3339, request.TriggeredAt)
+	if err != nil {
+		http.Error(w, "triggered_at must use RFC3339", http.StatusBadRequest)
+		return
+	}
+	asOf := time.Now()
+	if request.AsOf != "" {
+		asOf, err = time.Parse(time.RFC3339, request.AsOf)
+		if err != nil {
+			http.Error(w, "as_of must use RFC3339", http.StatusBadRequest)
+			return
+		}
+	}
+	location, _ := time.LoadLocation(loaded.Definition.Timezone)
+	type simulatedStep struct {
+		ID          string `json:"id"`
+		Wait        string `json:"wait"`
+		Template    string `json:"template"`
+		Category    string `json:"category"`
+		ScheduledAt string `json:"scheduled_at"`
+		State       string `json:"state"`
+	}
+	steps := make([]simulatedStep, 0, len(loaded.Definition.Steps))
+	for _, step := range loaded.Definition.Steps {
+		delay, err := workflow.ParseWait(step.Wait)
+		if err != nil {
+			http.Error(w, "stored workflow wait is invalid", http.StatusInternalServerError)
+			return
+		}
+		scheduledAt, err := workflow.NextAllowedTime(
+			triggeredAt.Add(delay),
+			loaded.Definition.Timezone,
+			loaded.Definition.QuietHours.Start,
+			loaded.Definition.QuietHours.End,
+		)
+		if err != nil {
+			http.Error(w, "stored workflow quiet hours are invalid", http.StatusInternalServerError)
+			return
+		}
+		state := "scheduled"
+		if !scheduledAt.After(asOf) {
+			state = "due"
+		}
+		steps = append(steps, simulatedStep{
+			ID:          step.ID,
+			Wait:        step.Wait,
+			Template:    step.Template,
+			Category:    step.Category,
+			ScheduledAt: scheduledAt.In(location).Format(time.RFC3339),
+			State:       state,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":                     loaded.Definition.Name,
+		"version":                  loaded.Definition.Version,
+		"trigger":                  loaded.Definition.Trigger.Type,
+		"triggered_at":             triggeredAt.Format(time.RFC3339),
+		"as_of":                    asOf.Format(time.RFC3339),
+		"timezone":                 loaded.Definition.Timezone,
+		"quiet_hours":              map[string]string{"start": loaded.Definition.QuietHours.Start, "end": loaded.Definition.QuietHours.End},
+		"frequency_cap":            map[string]any{"messages": loaded.Definition.Frequency.Messages, "window": loaded.Definition.Frequency.Window},
+		"steps":                    steps,
+		"writes_performed":         false,
+		"production_gate_enabled":  s.Config.ProductionFlowEnabled,
+		"outbound_sending_enabled": s.Config.OutboundSendingEnabled,
+	})
+}
+
 func (s *HTTPServer) reloadWorkflows(w http.ResponseWriter, r *http.Request) {
 	loaded, err := workflow.LoadDir(s.Config.WorkflowDir)
 	if err != nil {

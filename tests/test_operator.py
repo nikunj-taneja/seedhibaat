@@ -14,6 +14,7 @@ from seedhibaat.operator import (
     _safe_error_detail,
     _load_template,
     run_campaign_activate,
+    run_workflow_simulate,
     run_workflow_activate,
     run_secrets_init,
     run_template_submit,
@@ -67,6 +68,33 @@ class CampaignSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(OperatorError, "--activate --yes"):
                 run_campaign_activate(args)
         request.assert_not_called()
+
+    def test_workflow_simulation_passes_definition_without_mutating_flags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "workflow.yaml"
+            path.write_text("name: example\n", encoding="utf-8")
+            args = argparse.Namespace(
+                file=path,
+                triggered_at="2026-07-01T12:00:00Z",
+                as_of="2026-07-02T12:00:00Z",
+            )
+            with patch(
+                "seedhibaat.operator.daemon_request",
+                return_value={"writes_performed": False},
+            ) as request:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(run_workflow_simulate(args), 0)
+        request.assert_called_once_with(
+            "/api/v1/workflows/simulate",
+            method="POST",
+            payload={
+                "yaml": "name: example\n",
+                "triggered_at": "2026-07-01T12:00:00Z",
+                "as_of": "2026-07-02T12:00:00Z",
+            },
+        )
+        self.assertIn('"writes_performed": false', output.getvalue())
 
     def test_workflow_activation_requires_explicit_flags(self):
         args = argparse.Namespace(

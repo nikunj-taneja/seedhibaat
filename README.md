@@ -289,11 +289,15 @@ PYTHONPATH=src python3 -m seedhibaat workflow validate \
 PYTHONPATH=src python3 -m seedhibaat workflow reload
 PYTHONPATH=src python3 -m seedhibaat workflow list
 PYTHONPATH=src python3 -m seedhibaat workflow preview post_delivery
+PYTHONPATH=src python3 -m seedhibaat workflow simulate \
+  --file .sbconfig/workflows/post_delivery.yaml \
+  --triggered-at 2026-07-01T12:00:00Z
 ```
 
 Reloading never activates a workflow. Activation requires both gates,
 `--activate --yes`, and the exact previewed count. Historical backfill remains
-off unless separately implemented and approved.
+off unless separately implemented and approved. Simulation calculates every
+quiet-hours-adjusted step time but writes no database state and sends nothing.
 
 ## Segments and campaigns
 

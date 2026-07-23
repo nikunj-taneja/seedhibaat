@@ -193,6 +193,25 @@ def run_workflow_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_workflow_simulate(args: argparse.Namespace) -> int:
+    try:
+        body = args.file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise OperatorError(f"cannot read workflow {args.file}: {exc}") from exc
+    payload = {"yaml": body, "triggered_at": args.triggered_at}
+    if args.as_of:
+        payload["as_of"] = args.as_of
+    print(
+        json.dumps(
+            daemon_request(
+                "/api/v1/workflows/simulate", method="POST", payload=payload
+            ),
+            indent=2,
+        )
+    )
+    return 0
+
+
 def run_workflow_reload(_: argparse.Namespace) -> int:
     print(json.dumps(daemon_request("/api/v1/workflows/reload", method="POST", payload={}), indent=2))
     return 0
@@ -624,6 +643,13 @@ def register_operator_commands(subparsers: argparse._SubParsersAction) -> None:
     workflow_validate = workflow_sub.add_parser("validate")
     workflow_validate.add_argument("--file", type=Path, required=True)
     workflow_validate.set_defaults(func=run_workflow_validate)
+    workflow_simulate = workflow_sub.add_parser(
+        "simulate", help="calculate a workflow schedule without writing or sending"
+    )
+    workflow_simulate.add_argument("--file", type=Path, required=True)
+    workflow_simulate.add_argument("--triggered-at", required=True)
+    workflow_simulate.add_argument("--as-of")
+    workflow_simulate.set_defaults(func=run_workflow_simulate)
     workflow_reload = workflow_sub.add_parser("reload")
     workflow_reload.set_defaults(func=run_workflow_reload)
     workflow_preview = workflow_sub.add_parser("preview")

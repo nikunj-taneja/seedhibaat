@@ -47,10 +47,13 @@ tracked files or fixtures. Every repeat requires separate approval and
 
 1. Validate YAML with `seedhibaat workflow validate --file PATH`; reloading a
    definition does not activate it.
-2. Before activation, show every step, delay, template, category, quiet hours,
+2. Simulate a representative trigger with `seedhibaat workflow simulate
+   --file PATH --triggered-at RFC3339`; confirm `writes_performed` is false and
+   inspect every quiet-hours-adjusted scheduled time.
+3. Before activation, show every step, delay, template, category, quiet hours,
    frequency cap, conversion rule, suppression rule, and current audience
    count.
-3. Require explicit approval for that count. Activation requires both
+4. Require explicit approval for that count. Activation requires both
    production gates and `--confirmed-count N --activate --yes`. Historical
    backfill remains off unless separately approved.
 

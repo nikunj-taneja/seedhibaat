@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -81,6 +82,65 @@ func TestMetaVerificationAndAPIAuth(t *testing.T) {
 	handler.ServeHTTP(response, req)
 	if response.Code != 401 {
 		t.Fatalf("code=%d", response.Code)
+	}
+}
+
+func TestWorkflowSimulationCalculatesScheduleWithoutWrites(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	workflowYAML := `name: simulated_followup
+version: 1
+description: Simulation
+enabled: false
+timezone: Asia/Kolkata
+trigger:
+  type: order_delivered
+audience:
+  require_whatsapp_consent: true
+quiet_hours:
+  start: "21:00"
+  end: "10:00"
+frequency_cap:
+  messages: 2
+  window: 48h
+conversion: {}
+steps:
+  - id: day_1
+    wait: 1d
+    template: first
+    language: en_US
+    category: MARKETING
+  - id: day_28
+    wait: 28d
+    template: deadline
+    language: en_US
+    category: MARKETING
+`
+	requestBody, _ := json.Marshal(map[string]string{
+		"yaml":         workflowYAML,
+		"triggered_at": "2026-07-01T21:30:00+05:30",
+		"as_of":        "2026-07-10T12:00:00+05:30",
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/simulate", bytes.NewReader(requestBody))
+	request.Header.Set("Authorization", "Bearer api")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("simulation code=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"scheduled_at":"2026-07-03T10:00:00+05:30"`) ||
+		!strings.Contains(body, `"scheduled_at":"2026-07-30T10:00:00+05:30"`) ||
+		!strings.Contains(body, `"writes_performed":false`) {
+		t.Fatalf("unexpected simulation: %s", body)
+	}
+	var definitions, runs, jobs int
+	_ = db.DB.QueryRow(`SELECT count(*) FROM workflow_definitions`).Scan(&definitions)
+	_ = db.DB.QueryRow(`SELECT count(*) FROM workflow_runs`).Scan(&runs)
+	_ = db.DB.QueryRow(`SELECT count(*) FROM scheduled_jobs`).Scan(&jobs)
+	if definitions != 0 || runs != 0 || jobs != 0 {
+		t.Fatalf("simulation wrote state: definitions=%d runs=%d jobs=%d", definitions, runs, jobs)
 	}
 }
 
