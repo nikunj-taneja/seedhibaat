@@ -1,0 +1,25 @@
+# Placeholder documentation only. Link the real app before deploying.
+
+client_id = "REPLACE_WITH_SHOPIFY_CLIENT_ID"
+application_url = "https://wa.example.com/healthz"
+embedded = false
+name = "SeedhiBaat Example"
+
+[access_scopes]
+scopes = "read_orders,read_all_orders,read_customers,read_products,read_inventory,read_locations,read_returns"
+optional_scopes = []
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = []
+
+[webhooks]
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+compliance_topics = [
+  "customers/data_request",
+  "customers/redact",
+  "shop/redact",
+]
+uri = "https://wa.example.com/webhooks/shopify"
