@@ -32,7 +32,7 @@ serves an authenticated, read-only aggregate metrics dashboard.
   attribution
 - Run with SQLite WAL, migrations, integrity checks, encrypted backups,
   structured logs, Nginx, systemd, and no external queue service
-- View an optional read-only dashboard for delivery, observed reads, unique
+- View an optional read-only dashboard for delivery, Meta read rate, unique
   CTR, conversions, and currency-safe attributed revenue
 
 Production sending and production workflow activation are independent gates
@@ -133,6 +133,10 @@ https://wa.example.com/webhooks/meta
 Use the independently generated `META_WEBHOOK_VERIFY_TOKEN`, subscribe the
 `whatsapp_business_account` object to `messages`, and subscribe each WABA to
 the app. SeedhiBaat verifies `X-Hub-Signature-256` using the app secret.
+Status callbacks are correlated by Meta message ID, so a delayed receipt from
+the configured test profile is retained after the active sender switches back
+to production. Unsolicited inbound messages are accepted only for the active
+or configured test phone-number ID.
 
 ### Phone verification and registration
 

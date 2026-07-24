@@ -199,6 +199,49 @@ func TestMetaWebhookForDifferentPhoneNumberIsIgnored(t *testing.T) {
 	}
 }
 
+func TestKnownMetaStatusSurvivesPhoneProfileSwitch(t *testing.T) {
+	processor, database := testProcessor(t)
+	defer database.Close()
+	processor.Config.MetaPhoneNumberID = "production-phone"
+	processor.Config.MetaTestPhoneNumberID = "test-phone"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, _ = database.DB.Exec(`INSERT INTO customers(id,shopify_id,whatsapp_consent,created_at,updated_at) VALUES(1,'c','opted_in',?,?)`, now, now)
+	_, _ = database.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,template_name,template_language,category,idempotency_key,meta_message_id,state,created_at,updated_at) VALUES('m',1,'t','en_US','MARKETING','key','wamid.test','delivered',?,?)`, now, now)
+	payload := `{"object":"whatsapp_business_account","entry":[{"id":"w","changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"test-phone"},"statuses":[{"id":"wamid.test","status":"read","timestamp":"1784600000","recipient_id":"919999999999"}]}}]}]}`
+	if err := processor.processMetaWebhook(context.Background(), []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	var readAt sql.NullString
+	var state string
+	if err := database.DB.QueryRow(`SELECT read_at,state FROM outbound_messages WHERE id='m'`).Scan(&readAt, &state); err != nil {
+		t.Fatal(err)
+	}
+	if !readAt.Valid || state != "read" {
+		t.Fatalf("read_at=%v state=%q", readAt, state)
+	}
+}
+
+func TestInboundMetaWebhookAcceptsConfiguredTestPhone(t *testing.T) {
+	processor, database := testProcessor(t)
+	defer database.Close()
+	processor.Config.MetaPhoneNumberID = "production-phone"
+	processor.Config.MetaTestPhoneNumberID = "test-phone"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	phone := "919999999999"
+	_, _ = database.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_hash,whatsapp_consent,created_at,updated_at) VALUES(1,'c',?,'opted_in',?,?)`, security.KeyedHash("pii-key", phone), now, now)
+	payload := `{"object":"whatsapp_business_account","entry":[{"id":"w","changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"test-phone"},"messages":[{"from":"919999999999","id":"in.test","timestamp":"1784600100","type":"text","text":{"body":"STOP"}}]}}]}]}`
+	if err := processor.processMetaWebhook(context.Background(), []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	var consent string
+	if err := database.DB.QueryRow(`SELECT whatsapp_consent FROM customers WHERE id=1`).Scan(&consent); err != nil {
+		t.Fatal(err)
+	}
+	if consent != "opted_out" {
+		t.Fatalf("consent=%q", consent)
+	}
+}
+
 func TestShopifyCustomerWebhookQueuesDirectReconciliation(t *testing.T) {
 	processor, database := testProcessor(t)
 	defer database.Close()

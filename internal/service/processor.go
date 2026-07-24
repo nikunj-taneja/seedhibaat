@@ -209,14 +209,14 @@ func (p *Processor) processMetaWebhook(ctx context.Context, body []byte) error {
 	}
 	for _, entry := range webhook.Entry {
 		for _, change := range entry.Changes {
-			if configured := strings.TrimSpace(p.Config.MetaPhoneNumberID); configured != "" && change.Value.Metadata.PhoneNumberID != "" && change.Value.Metadata.PhoneNumberID != configured {
-				p.Logger.Warn("ignored Meta webhook for another phone number", "phone_number_id", change.Value.Metadata.PhoneNumberID)
-				continue
-			}
 			for _, status := range change.Value.Statuses {
 				if err := p.recordMetaStatus(ctx, status); err != nil {
 					return err
 				}
+			}
+			if len(change.Value.Messages) > 0 && !p.acceptsInboundPhoneNumber(change.Value.Metadata.PhoneNumberID) {
+				p.Logger.Warn("ignored inbound Meta webhook for an unconfigured phone number")
+				continue
 			}
 			for _, message := range change.Value.Messages {
 				if err := p.recordInbound(ctx, message); err != nil {
@@ -226,6 +226,16 @@ func (p *Processor) processMetaWebhook(ctx context.Context, body []byte) error {
 		}
 	}
 	return nil
+}
+
+func (p *Processor) acceptsInboundPhoneNumber(phoneNumberID string) bool {
+	active := strings.TrimSpace(p.Config.MetaPhoneNumberID)
+	test := strings.TrimSpace(p.Config.MetaTestPhoneNumberID)
+	if active == "" && test == "" {
+		return true
+	}
+	received := strings.TrimSpace(phoneNumberID)
+	return received != "" && (received == active || received == test)
 }
 
 func (p *Processor) recordMetaStatus(ctx context.Context, status meta.MessageStatus) error {

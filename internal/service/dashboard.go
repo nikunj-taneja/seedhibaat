@@ -38,6 +38,8 @@ type dashboardFunnelStep struct {
 
 type dashboardBar struct {
 	X         int
+	ClickX    int
+	LabelX    int
 	Y         int
 	Height    int
 	ClickY    int
@@ -194,7 +196,7 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	view.Cards = []dashboardCard{
 		{Label: "Delivered", Value: comma(metrics.Delivered), Note: percent(metrics.DeliveryRate) + " of accepted", Tone: "green"},
-		{Label: "Observed read", Value: percent(metrics.ObservedReadRate), Note: comma(metrics.ObservedRead) + " read receipts", Tone: "green"},
+		{Label: "Read rate", Value: percent(metrics.ObservedReadRate), Note: comma(metrics.ObservedRead) + " Meta read receipts", Tone: "green"},
 		{Label: "Unique CTR", Value: percent(metrics.UniqueCTR), Note: comma(metrics.UniqueClicks) + " unique clickers", Tone: "green"},
 		{Label: "Attributed revenue", Value: view.Revenue, Note: comma(metrics.ConvertedRecipients) + " converted recipients", Tone: "green"},
 	}
@@ -207,7 +209,7 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		{Label: "Accepted", Value: metrics.Accepted, Max: maximum},
 		{Label: "Sent", Value: metrics.Sent, Max: maximum},
 		{Label: "Delivered", Value: metrics.Delivered, Max: maximum},
-		{Label: "Observed read", Value: metrics.ObservedRead, Max: maximum},
+		{Label: "Read", Value: metrics.ObservedRead, Max: maximum},
 		{Label: "Unique click", Value: metrics.UniqueClicks, Max: maximum},
 		{Label: "Converted", Value: metrics.ConvertedRecipients, Max: maximum},
 	}
@@ -289,27 +291,24 @@ func makeChartBars(daily []store.DailyMetric) []dashboardBar {
 	if maximum < 1 {
 		maximum = 1
 	}
-	width := 860 / len(daily)
-	if width > 42 {
-		width = 42
-	}
-	if width < 8 {
-		width = 8
-	}
-	gap := (860 - width*len(daily)) / (len(daily) + 1)
-	if gap < 2 {
-		gap = 2
-	}
+	const (
+		plotLeft  = 50
+		plotWidth = 880
+		baseline  = 178
+	)
+	slotWidth := float64(plotWidth) / float64(len(daily))
 	var bars []dashboardBar
 	for index, day := range daily {
 		height := int(float64(day.Delivered) / float64(maximum) * 150)
 		clickHeight := int(float64(day.UniqueClicks) / float64(maximum) * 150)
-		x := 60 + gap*(index+1) + width*index
+		center := int(float64(plotLeft) + slotWidth*(float64(index)+0.5))
 		bars = append(bars, dashboardBar{
-			X:         x,
-			Y:         178 - height,
+			X:         center - 9,
+			ClickX:    center + 2,
+			LabelX:    center,
+			Y:         baseline - height,
 			Height:    height,
-			ClickY:    178 - clickHeight,
+			ClickY:    baseline - clickHeight,
 			ClickH:    clickHeight,
 			Label:     day.Date,
 			Delivered: day.Delivered,

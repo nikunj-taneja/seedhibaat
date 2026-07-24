@@ -200,11 +200,35 @@ steps:
 	if !strings.Contains(body, "Your WhatsApp analytics") || !strings.Contains(body, "Performance ledger") || !strings.Contains(body, "Active workflows") || !strings.Contains(body, "example_followup") {
 		t.Fatalf("dashboard missing expected content")
 	}
+	if !strings.Contains(body, "Read rate") || !strings.Contains(body, "Meta read receipts") || strings.Contains(body, "Observed read") {
+		t.Fatalf("dashboard read labels are not simplified")
+	}
 	if strings.Contains(body, "private-customer") || strings.Contains(body, "0102") || strings.Contains(body, "0304") {
 		t.Fatalf("dashboard leaked private customer data")
 	}
 	if response.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("cache control=%q", response.Header().Get("Cache-Control"))
+	}
+}
+
+func TestDailyChartBarsAreCenteredAndDoNotOverlap(t *testing.T) {
+	bars := makeChartBars([]store.DailyMetric{
+		{Date: "1 Jan", Delivered: 3, UniqueClicks: 1},
+		{Date: "2 Jan", Delivered: 2, UniqueClicks: 2},
+	})
+	if len(bars) != 2 {
+		t.Fatalf("bars=%d", len(bars))
+	}
+	for _, bar := range bars {
+		if bar.ClickX < bar.X+9 {
+			t.Fatalf("overlapping bars: delivered_x=%d click_x=%d", bar.X, bar.ClickX)
+		}
+		if bar.LabelX <= bar.X || bar.LabelX >= bar.ClickX+6 {
+			t.Fatalf("label is not centered under pair: %+v", bar)
+		}
+	}
+	if bars[0].X < 50 || bars[len(bars)-1].ClickX+6 > 930 {
+		t.Fatalf("bars escaped plot bounds: first=%+v last=%+v", bars[0], bars[len(bars)-1])
 	}
 }
 

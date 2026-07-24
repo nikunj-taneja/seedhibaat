@@ -20,7 +20,7 @@
       <div>
         <p class="eyebrow">MESSAGE PERFORMANCE</p>
         <h1>Your WhatsApp analytics</h1>
-        <p class="lede">Delivery, observed reads, clicks, conversions, and attributed revenue.</p>
+        <p class="lede">Delivery, reads, clicks, conversions, and attributed revenue.</p>
       </div>
       <div class="range-card">
         <span class="label">REPORTING WINDOW</span>
@@ -68,7 +68,7 @@
           </div>
           {{end}}
         </div>
-        <p class="footnote">Accepted is not delivered. Read counts include only observed read receipts.</p>
+        <p class="footnote">Accepted is not delivered. Read counts are based on Meta read receipts.</p>
       </article>
 
       <article class="card panel attribution">
@@ -115,7 +115,7 @@
             <div><dt>Pending jobs</dt><dd>{{.PendingJobs}}</dd></div>
             <div><dt>Next activity</dt><dd>{{.NextActivity}}</dd></div>
             <div><dt>Delivered</dt><dd>{{.Delivered}}</dd></div>
-            <div><dt>Observed read</dt><dd>{{.ReadRate}}</dd></div>
+            <div><dt>Read rate</dt><dd>{{.ReadRate}}</dd></div>
           </dl>
         </article>
         {{end}}
@@ -143,8 +143,8 @@
           <line x1="50" y1="78" x2="930" y2="78"></line>
           {{range .Bars}}
           <rect class="delivered" x="{{.X}}" y="{{.Y}}" width="9" height="{{.Height}}" rx="4"><title>{{.Label}}: {{.Delivered}} delivered</title></rect>
-          <rect class="clicked" x="{{.X}}" y="{{.ClickY}}" width="4" height="{{.ClickH}}" rx="2"><title>{{.Label}}: {{.Clicks}} unique clickers</title></rect>
-          {{if .ShowLabel}}<text x="{{.X}}" y="202">{{.Label}}</text>{{end}}
+          <rect class="clicked" x="{{.ClickX}}" y="{{.ClickY}}" width="6" height="{{.ClickH}}" rx="3"><title>{{.Label}}: {{.Clicks}} unique clickers</title></rect>
+          {{if .ShowLabel}}<text x="{{.LabelX}}" y="202">{{.Label}}</text>{{end}}
           {{end}}
         </svg>
       </div>

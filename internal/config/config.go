@@ -28,6 +28,7 @@ type Config struct {
 	MetaAPIVersion         string
 	MetaWABAID             string
 	MetaPhoneNumberID      string
+	MetaTestPhoneNumberID  string
 	ShopifyShopDomain      string
 	ShopifyClientID        string
 	ShopifyClientSecret    string
@@ -67,6 +68,7 @@ func Load() (Config, error) {
 		MetaAPIVersion:         env("META_GRAPH_API_VERSION", "v23.0"),
 		MetaWABAID:             os.Getenv("WHATSAPP_BUSINESS_ACCOUNT_ID"),
 		MetaPhoneNumberID:      os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		MetaTestPhoneNumberID:  os.Getenv("WHATSAPP_TEST_PHONE_NUMBER_ID"),
 		ShopifyShopDomain:      os.Getenv("SHOPIFY_SHOP_DOMAIN"),
 		ShopifyClientID:        os.Getenv("SHOPIFY_CLIENT_ID"),
 		ShopifyClientSecret:    os.Getenv("SHOPIFY_CLIENT_SECRET"),

@@ -35,6 +35,10 @@ Browser ─> Basic Auth ─> aggregate read-only /metrics dashboard
 - An outbound message stores Meta's message ID and its accepted, sent,
   delivered, read and failed timestamps independently, so out-of-order events
   do not destroy information.
+- A signed Meta status callback is applied only when its message ID is already
+  known locally. This lets delayed test-profile receipts arrive after the
+  active sending profile returns to production. Unsolicited inbound messages
+  remain restricted to the active and configured test phone-number IDs.
 - API acceptance sets only `accepted_at`. Delivery is set only by a verified
   `delivered` webhook.
 

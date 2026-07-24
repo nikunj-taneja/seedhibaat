@@ -74,6 +74,11 @@ Use `--campaign`, `--workflow`, or `--template` to filter a report. Set the
 last-touch purchase window with `SEEDHIBAAT_ATTRIBUTION_WINDOW` (default
 `720h`).
 
+The dashboard presents this provider signal as **Read rate** and **Read**.
+Internally and in JSON reports it remains `observed_read` to make the
+measurement limitation explicit. SeedhiBaat does not infer a read from a click
+or reply.
+
 The optional `/metrics` dashboard uses independent Basic Auth credentials from
 `SEEDHIBAAT_METRICS_USERNAME` and `SEEDHIBAAT_METRICS_PASSWORD`. Keep the
 password owner-only and at least 32 characters. `SEEDHIBAAT_REPORT_TIMEZONE`
