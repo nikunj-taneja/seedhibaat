@@ -148,7 +148,7 @@
             <title>{{.Label}} · Delivered: {{.Delivered}} · Unique clickers: {{.Clicks}}</title>
             <rect class="delivered" x="{{.X}}" y="{{.Y}}" width="9" height="{{.Height}}" rx="4"></rect>
             <rect class="clicked" x="{{.ClickX}}" y="{{.ClickY}}" width="6" height="{{.ClickH}}" rx="3"></rect>
-            <rect class="chart-hit" x="{{.HitX}}" y="28" width="28" height="150"></rect>
+            <rect class="chart-hit" x="{{.HitX}}" y="28" width="28" height="150" fill="transparent" pointer-events="all"></rect>
           </g>
           {{if .ShowLabel}}<text x="{{.LabelX}}" y="202">{{.Label}}</text>{{end}}
           {{end}}

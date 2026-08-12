@@ -251,6 +251,9 @@ steps:
 	if !strings.Contains(body, "Unique clickers: 0") || !strings.Contains(body, `class="chart-hit"`) {
 		t.Fatalf("dashboard chart hover statistics are missing")
 	}
+	if !strings.Contains(body, `fill="transparent" pointer-events="all"`) {
+		t.Fatalf("dashboard chart hover targets are visibly rendered")
+	}
 	if strings.Contains(body, "private-customer") || strings.Contains(body, "0102") || strings.Contains(body, "0304") {
 		t.Fatalf("dashboard leaked private customer data")
 	}

@@ -125,7 +125,7 @@ func (s *HTTPServer) metricsAuthenticated(next http.Handler) http.Handler {
 
 func (s *HTTPServer) dashboardStyles(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("Cache-Control", "private, no-store")
 	_, _ = w.Write(dashboardCSS)
 }
 
