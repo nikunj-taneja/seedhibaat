@@ -213,7 +213,7 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	view.Cards = []dashboardCard{
-		{Label: "Delivered", Value: comma(metrics.Delivered), Note: percent(metrics.DeliveryRate) + " of accepted", Tone: "green"},
+		{Label: "Delivery rate", Value: percent(metrics.DeliveryRate), Note: comma(metrics.Delivered) + " delivered of " + comma(metrics.Accepted) + " accepted", Tone: "green"},
 		{Label: "Read rate", Value: percent(metrics.ObservedReadRate), Note: comma(metrics.ObservedRead) + " Meta read receipts", Tone: "green"},
 		{Label: "Unique CTR", Value: percent(metrics.UniqueCTR), Note: comma(metrics.UniqueClicks) + " unique clickers", Tone: "green"},
 		{Label: "CVR", Value: percent(metrics.ConversionRate), Note: comma(metrics.ConvertedRecipients) + " converted ÷ " + comma(metrics.DeliveredRecipients) + " delivered recipients", Tone: "green"},

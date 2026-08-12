@@ -248,6 +248,9 @@ steps:
 	if !strings.Contains(body, "CVR") || !strings.Contains(body, "converted ÷") {
 		t.Fatalf("dashboard delivered-based CVR card is missing")
 	}
+	if !strings.Contains(body, "Delivery rate") || !strings.Contains(body, "delivered of") {
+		t.Fatalf("dashboard delivery-rate card is missing")
+	}
 	if !strings.Contains(body, "Unique clickers: 0") || !strings.Contains(body, `class="chart-hit"`) {
 		t.Fatalf("dashboard chart hover statistics are missing")
 	}
