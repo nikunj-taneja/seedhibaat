@@ -245,6 +245,12 @@ steps:
 	if !strings.Contains(body, "Read rate") || !strings.Contains(body, "Meta read receipts") || strings.Contains(body, "Observed read") {
 		t.Fatalf("dashboard read labels are not simplified")
 	}
+	if !strings.Contains(body, "100.0%") {
+		t.Fatalf("dashboard funnel percentages are missing")
+	}
+	if !strings.Contains(body, "Unique clickers: 0") || !strings.Contains(body, `class="chart-hit"`) {
+		t.Fatalf("dashboard chart hover statistics are missing")
+	}
 	if strings.Contains(body, "private-customer") || strings.Contains(body, "0102") || strings.Contains(body, "0304") {
 		t.Fatalf("dashboard leaked private customer data")
 	}

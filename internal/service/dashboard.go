@@ -31,14 +31,16 @@ type dashboardCard struct {
 }
 
 type dashboardFunnelStep struct {
-	Label string
-	Value int64
-	Max   int64
+	Label   string
+	Value   int64
+	Max     int64
+	Percent string
 }
 
 type dashboardBar struct {
 	X         int
 	ClickX    int
+	HitX      int
 	LabelX    int
 	Y         int
 	Height    int
@@ -224,13 +226,13 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		maximum = 1
 	}
 	view.Funnel = []dashboardFunnelStep{
-		{Label: "Attempted", Value: metrics.Attempted, Max: maximum},
-		{Label: "Accepted", Value: metrics.Accepted, Max: maximum},
-		{Label: "Sent", Value: metrics.Sent, Max: maximum},
-		{Label: "Delivered", Value: metrics.Delivered, Max: maximum},
-		{Label: "Read", Value: metrics.ObservedRead, Max: maximum},
-		{Label: "Unique click", Value: metrics.UniqueClicks, Max: maximum},
-		{Label: "Converted", Value: metrics.ConvertedRecipients, Max: maximum},
+		funnelStep("Attempted", metrics.Attempted, maximum),
+		funnelStep("Accepted", metrics.Accepted, maximum),
+		funnelStep("Sent", metrics.Sent, maximum),
+		funnelStep("Delivered", metrics.Delivered, maximum),
+		funnelStep("Read", metrics.ObservedRead, maximum),
+		funnelStep("Unique click", metrics.UniqueClicks, maximum),
+		funnelStep("Converted", metrics.ConvertedRecipients, maximum),
 	}
 	view.Bars = makeChartBars(daily)
 	for _, item := range breakdown {
@@ -305,6 +307,14 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func funnelStep(label string, value, maximum int64) dashboardFunnelStep {
+	rate := 0.0
+	if maximum > 0 {
+		rate = float64(value) / float64(maximum)
+	}
+	return dashboardFunnelStep{Label: label, Value: value, Max: maximum, Percent: percent(rate)}
+}
+
 func makeChartBars(daily []store.DailyMetric) []dashboardBar {
 	if len(daily) == 0 {
 		return nil
@@ -335,6 +345,7 @@ func makeChartBars(daily []store.DailyMetric) []dashboardBar {
 		bars = append(bars, dashboardBar{
 			X:         center - 9,
 			ClickX:    center + 2,
+			HitX:      center - 14,
 			LabelX:    center,
 			Y:         baseline - height,
 			Height:    height,

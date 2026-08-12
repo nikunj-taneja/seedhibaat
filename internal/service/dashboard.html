@@ -64,7 +64,7 @@
           <div class="funnel-row">
             <span>{{.Label}}</span>
             <progress max="{{.Max}}" value="{{.Value}}"></progress>
-            <strong>{{.Value}}</strong>
+            <strong>{{.Value}} <small>{{.Percent}}</small></strong>
           </div>
           {{end}}
         </div>
@@ -144,8 +144,12 @@
           <line x1="50" y1="128" x2="930" y2="128"></line>
           <line x1="50" y1="78" x2="930" y2="78"></line>
           {{range .Bars}}
-          <rect class="delivered" x="{{.X}}" y="{{.Y}}" width="9" height="{{.Height}}" rx="4"><title>{{.Label}}: {{.Delivered}} delivered</title></rect>
-          <rect class="clicked" x="{{.ClickX}}" y="{{.ClickY}}" width="6" height="{{.ClickH}}" rx="3"><title>{{.Label}}: {{.Clicks}} unique clickers</title></rect>
+          <g class="chart-day" tabindex="0" aria-label="{{.Label}}: {{.Delivered}} delivered, {{.Clicks}} unique clickers">
+            <title>{{.Label}} · Delivered: {{.Delivered}} · Unique clickers: {{.Clicks}}</title>
+            <rect class="delivered" x="{{.X}}" y="{{.Y}}" width="9" height="{{.Height}}" rx="4"></rect>
+            <rect class="clicked" x="{{.ClickX}}" y="{{.ClickY}}" width="6" height="{{.ClickH}}" rx="3"></rect>
+            <rect class="chart-hit" x="{{.HitX}}" y="28" width="28" height="150"></rect>
+          </g>
           {{if .ShowLabel}}<text x="{{.LabelX}}" y="202">{{.Label}}</text>{{end}}
           {{end}}
         </svg>
