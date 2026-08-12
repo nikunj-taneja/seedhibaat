@@ -603,9 +603,9 @@ func (s *HTTPServer) createCampaign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	details, _ := json.Marshal(map[string]any{"audience_count": result.EligibleCount, "segment": request.Segment, "exclusions": result.Exclusions, "tracked_url": request.TrackedURL})
+	details, _ := json.Marshal(map[string]any{"audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL})
 	_ = s.Store.Audit(r.Context(), "operator", "campaign.create", "campaign", id, string(details))
-	writeJSON(w, 201, map[string]any{"id": id, "state": "draft", "audience_count": result.EligibleCount, "segment": request.Segment, "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "frequency_messages": request.FrequencyMessages, "frequency_window": request.FrequencyWindow})
+	writeJSON(w, 201, map[string]any{"id": id, "state": "draft", "audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "frequency_messages": request.FrequencyMessages, "frequency_window": request.FrequencyWindow})
 }
 func (s *HTTPServer) getCampaign(w http.ResponseWriter, r *http.Request) {
 	var id, name, segmentJSON, exclusionsJSON, template, language, state, created string
@@ -619,11 +619,11 @@ func (s *HTTPServer) getCampaign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", 404)
 		return
 	}
-	var definition any
+	var definition segment.Definition
 	var exclusions any
 	_ = json.Unmarshal([]byte(segmentJSON), &definition)
 	_ = json.Unmarshal([]byte(exclusionsJSON), &exclusions)
-	writeJSON(w, 200, map[string]any{"id": id, "name": name, "segment": definition, "exclusions": exclusions, "template": template, "language": language, "scheduled_at": nullableJSON(scheduled), "state": state, "audience_count": count, "created_at": created, "tracked_url": nullableJSON(trackedURL), "frequency_messages": frequencyMessages, "frequency_window": frequencyWindow})
+	writeJSON(w, 200, map[string]any{"id": id, "name": name, "segment": definition.Public(), "exclusions": exclusions, "template": template, "language": language, "scheduled_at": nullableJSON(scheduled), "state": state, "audience_count": count, "created_at": created, "tracked_url": nullableJSON(trackedURL), "frequency_messages": frequencyMessages, "frequency_window": frequencyWindow})
 }
 func (s *HTTPServer) activateCampaign(w http.ResponseWriter, r *http.Request) {
 	if !s.Config.ProductionFlowEnabled || !s.Config.OutboundSendingEnabled {

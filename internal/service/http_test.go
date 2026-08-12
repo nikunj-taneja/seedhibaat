@@ -85,6 +85,48 @@ func TestMetaVerificationAndAPIAuth(t *testing.T) {
 	}
 }
 
+func TestFrozenCampaignResponsesAndAuditDoNotExposeCustomerIDs(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	shopifyID := "gid://shopify/Customer/private"
+	_, err := db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,whatsapp_consent,created_at,updated_at) VALUES(1,?,x'01','opted_in',?,?)`, shopifyID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := fmt.Sprintf(`{"name":"private audience","segment":{"kind":"frozen_csv","require_whatsapp_consent":true,"customer_shopify_ids":[%q]},"template":"approved","language":"en_US"}`, shopifyID)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/campaigns", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer api")
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), shopifyID) || !strings.Contains(response.Body.String(), `"frozen_count":1`) {
+		t.Fatalf("unsafe response: %s", response.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	campaignID, _ := created["id"].(string)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/campaigns/"+campaignID, nil)
+	req.Header.Set("Authorization", "Bearer api")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), shopifyID) {
+		t.Fatalf("unsafe campaign response: %s", response.Body.String())
+	}
+	var auditDetails string
+	if err := db.DB.QueryRow(`SELECT details_json FROM audit_log WHERE action='campaign.create' ORDER BY occurred_at DESC LIMIT 1`).Scan(&auditDetails); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(auditDetails, shopifyID) {
+		t.Fatalf("audit leaked customer ID: %s", auditDetails)
+	}
+}
+
 func TestWorkflowSimulationCalculatesScheduleWithoutWrites(t *testing.T) {
 	server, db := testHTTPServer(t)
 	defer db.Close()

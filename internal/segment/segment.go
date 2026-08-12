@@ -10,16 +10,26 @@ import (
 )
 
 type Definition struct {
-	Kind                 string `json:"kind"`
-	ProductHandle        string `json:"product_handle,omitempty"`
-	ProductTitle         string `json:"product_title,omitempty"`
-	WithinDays           int    `json:"within_days,omitempty"`
-	LapsedDays           int    `json:"lapsed_days,omitempty"`
-	RequireConsent       bool   `json:"require_whatsapp_consent"`
-	ExcludeProductHandle string `json:"exclude_product_handle,omitempty"`
-	ExcludeProductTitle  string `json:"exclude_product_title,omitempty"`
-	ExcludeProductTag    string `json:"exclude_product_tag,omitempty"`
-	ExcludeRecentDays    int    `json:"exclude_recent_purchase_days,omitempty"`
+	Kind                 string   `json:"kind"`
+	ProductHandle        string   `json:"product_handle,omitempty"`
+	ProductTitle         string   `json:"product_title,omitempty"`
+	WithinDays           int      `json:"within_days,omitempty"`
+	LapsedDays           int      `json:"lapsed_days,omitempty"`
+	RequireConsent       bool     `json:"require_whatsapp_consent"`
+	ExcludeProductHandle string   `json:"exclude_product_handle,omitempty"`
+	ExcludeProductTitle  string   `json:"exclude_product_title,omitempty"`
+	ExcludeProductTag    string   `json:"exclude_product_tag,omitempty"`
+	ExcludeRecentDays    int      `json:"exclude_recent_purchase_days,omitempty"`
+	CustomerShopifyIDs   []string `json:"customer_shopify_ids,omitempty"`
+	FrozenCount          int      `json:"frozen_count,omitempty"`
+}
+
+func (d Definition) Public() Definition {
+	if d.Kind == "frozen_csv" {
+		d.FrozenCount = len(d.CustomerShopifyIDs)
+		d.CustomerShopifyIDs = nil
+	}
+	return d
 }
 
 type Result struct {
@@ -45,6 +55,13 @@ func Preview(ctx context.Context, db *sql.DB, definition Definition, now time.Ti
 		"p", "", definition.ProductHandle, definition.ProductTitle, "",
 	)
 	switch definition.Kind {
+	case "frozen_csv":
+		placeholders := make([]string, len(definition.CustomerShopifyIDs))
+		for index, shopifyID := range definition.CustomerShopifyIDs {
+			placeholders[index] = "?"
+			args = append(args, shopifyID)
+		}
+		where = append(where, "c.shopify_id IN ("+strings.Join(placeholders, ",")+")")
 	case "product_buyers":
 		where = append(where, `EXISTS (SELECT 1 FROM orders o JOIN order_lines ol ON ol.order_id=o.shopify_id LEFT JOIN products p ON p.shopify_id=ol.product_id WHERE o.customer_id=c.id AND o.cancelled_at IS NULL AND o.refunded_at IS NULL AND o.return_recorded_at IS NULL AND `+purchaseProductCondition+`)`)
 		args = append(args, purchaseProductArgs...)
@@ -82,7 +99,7 @@ func Preview(ctx context.Context, db *sql.DB, definition Definition, now time.Ti
 		return Result{}, err
 	}
 	defer rows.Close()
-	result := Result{Definition: definition, Exclusions: map[string]int64{}}
+	result := Result{Definition: definition.Public(), Exclusions: map[string]int64{}}
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
@@ -107,6 +124,26 @@ func Preview(ctx context.Context, db *sql.DB, definition Definition, now time.Ti
 
 func (d Definition) Validate() error {
 	switch d.Kind {
+	case "frozen_csv":
+		if !d.RequireConsent {
+			return errors.New("frozen_csv requires WhatsApp consent")
+		}
+		if len(d.CustomerShopifyIDs) == 0 {
+			return errors.New("customer_shopify_ids is required")
+		}
+		if len(d.CustomerShopifyIDs) > 10000 {
+			return errors.New("customer_shopify_ids cannot exceed 10000 entries")
+		}
+		seen := make(map[string]struct{}, len(d.CustomerShopifyIDs))
+		for _, shopifyID := range d.CustomerShopifyIDs {
+			if !strings.HasPrefix(shopifyID, "gid://shopify/Customer/") || strings.TrimPrefix(shopifyID, "gid://shopify/Customer/") == "" {
+				return errors.New("customer_shopify_ids contains an invalid Shopify customer GID")
+			}
+			if _, exists := seen[shopifyID]; exists {
+				return errors.New("customer_shopify_ids contains a duplicate")
+			}
+			seen[shopifyID] = struct{}{}
+		}
 	case "not_reordered":
 	case "product_buyers", "back_in_stock":
 		if d.ProductHandle == "" && d.ProductTitle == "" {

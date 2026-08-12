@@ -11,6 +11,7 @@ from unittest.mock import patch
 from seedhibaat.operator import (
     GENERATED_SECRET_NAMES,
     OperatorError,
+    _segment_payload,
     _safe_error_detail,
     _load_template,
     run_campaign_activate,
@@ -187,6 +188,25 @@ class TemplateOperatorTests(unittest.TestCase):
 
 
 class CampaignSafetyTests(unittest.TestCase):
+    def test_frozen_csv_reads_owner_only_shopify_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audience.csv"
+            path.write_text(
+                "customer_id\ngid://shopify/Customer/1\ngid://shopify/Customer/2\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                kind="frozen_csv", customer_ids_file=path,
+                product_handle=None, product_title=None, within_days=None,
+                lapsed_days=None, allow_unknown_consent=False,
+                exclude_product_handle=None, exclude_product_title=None,
+                exclude_product_tag=None, exclude_recent_days=None,
+            )
+            payload = _segment_payload(args)
+        self.assertEqual(payload["customer_shopify_ids"], [
+            "gid://shopify/Customer/1", "gid://shopify/Customer/2"
+        ])
+
     def test_activation_requires_explicit_flags(self):
         args = argparse.Namespace(
             campaign_id="campaign_test",

@@ -62,3 +62,43 @@ func TestPurchaseSegmentsExcludeRefundedAndReturnedOrders(t *testing.T) {
 		t.Fatalf("eligible refunded/returned customers=%d", result.EligibleCount)
 	}
 }
+
+func TestFrozenCSVUsesShopifyIDsAndAppliesSendTimeExclusions(t *testing.T) {
+	db, err := store.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for id := 1; id <= 4; id++ {
+		_, err = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,whatsapp_consent,created_at,updated_at) VALUES(?,?,x'01','opted_in',?,?)`, id, fmt.Sprintf("gid://shopify/Customer/%d", id), now, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _ = db.DB.Exec(`UPDATE customers SET whatsapp_consent='opted_out' WHERE id=2`)
+	_, _ = db.DB.Exec(`UPDATE customers SET suppressed_at=? WHERE id=3`, now)
+	_, _ = db.DB.Exec(`UPDATE customers SET invalid_number=1 WHERE id=4`)
+	definition := Definition{Kind: "frozen_csv", RequireConsent: true, CustomerShopifyIDs: []string{"gid://shopify/Customer/1", "gid://shopify/Customer/2", "gid://shopify/Customer/3", "gid://shopify/Customer/4"}}
+	result, err := Preview(context.Background(), db.DB, definition, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EligibleCount != 1 || len(result.CustomerIDs) != 1 || result.CustomerIDs[0] != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Definition.FrozenCount != 4 || result.Definition.CustomerShopifyIDs != nil {
+		t.Fatalf("public definition leaked IDs: %+v", result.Definition)
+	}
+}
+
+func TestFrozenCSVRejectsDuplicateAndMalformedIDs(t *testing.T) {
+	duplicate := Definition{Kind: "frozen_csv", RequireConsent: true, CustomerShopifyIDs: []string{"gid://shopify/Customer/1", "gid://shopify/Customer/1"}}
+	if duplicate.Validate() == nil {
+		t.Fatal("expected duplicate validation error")
+	}
+	malformed := Definition{Kind: "frozen_csv", RequireConsent: true, CustomerShopifyIDs: []string{"1"}}
+	if malformed.Validate() == nil {
+		t.Fatal("expected malformed validation error")
+	}
+}

@@ -593,7 +593,7 @@ def run_shopify_webhooks(args: argparse.Namespace) -> int:
 
 
 def _segment_payload(args: argparse.Namespace) -> dict[str, Any]:
-    return {
+    payload = {
         "kind": args.kind,
         "product_handle": args.product_handle or "",
         "product_title": args.product_title or "",
@@ -605,6 +605,26 @@ def _segment_payload(args: argparse.Namespace) -> dict[str, Any]:
         "exclude_product_tag": args.exclude_product_tag or "",
         "exclude_recent_purchase_days": args.exclude_recent_days or 0,
     }
+    customer_ids_file = getattr(args, "customer_ids_file", None)
+    if args.kind == "frozen_csv":
+        if customer_ids_file is None:
+            raise OperatorError("frozen_csv requires --customer-ids-file")
+        try:
+            with customer_ids_file.open(newline="", encoding="utf-8-sig") as handle:
+                reader = csv.DictReader(handle)
+                if not reader.fieldnames or "customer_id" not in reader.fieldnames:
+                    raise OperatorError("customer ID CSV requires a customer_id column")
+                customer_ids = [(row.get("customer_id") or "").strip() for row in reader]
+        except OSError as exc:
+            raise OperatorError(f"cannot read customer ID CSV: {exc}") from exc
+        if not customer_ids or any(not value for value in customer_ids):
+            raise OperatorError("customer ID CSV contains no IDs or has blank IDs")
+        if len(customer_ids) != len(set(customer_ids)):
+            raise OperatorError("customer ID CSV contains duplicate IDs")
+        payload["customer_shopify_ids"] = customer_ids
+    elif customer_ids_file is not None:
+        raise OperatorError("--customer-ids-file is only valid with frozen_csv")
+    return payload
 
 
 def run_segment_preview(args: argparse.Namespace) -> int:
@@ -721,7 +741,8 @@ def run_consent_import(args: argparse.Namespace) -> int:
 
 
 def _add_segment_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--kind", required=True, choices=("product_buyers", "not_reordered", "recent_purchasers", "lapsed_customers", "back_in_stock"))
+    parser.add_argument("--kind", required=True, choices=("product_buyers", "not_reordered", "recent_purchasers", "lapsed_customers", "back_in_stock", "frozen_csv"))
+    parser.add_argument("--customer-ids-file", type=Path, help="owner-only CSV with a customer_id Shopify GID column")
     parser.add_argument("--product-handle")
     parser.add_argument("--product-title")
     parser.add_argument("--within-days", type=int)
