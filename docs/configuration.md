@@ -85,6 +85,11 @@ password owner-only and at least 32 characters. `SEEDHIBAAT_REPORT_TIMEZONE`
 controls date labels. The dashboard is aggregate, read-only, and never exposes
 customer records or state-changing controls.
 
+Set `SEEDHIBAAT_MARKETING_MESSAGE_COST_MICROS` to the current per-delivered
+marketing-message price in millionths of one rupee. The dashboard reports estimated INR spend as
+delivered marketing messages multiplied by that configured rate. ROAS is
+attributed INR revenue divided by estimated spend.
+
 ## Shopify reconciliation
 
 The daemon reconciles Shopify once immediately at startup and then at

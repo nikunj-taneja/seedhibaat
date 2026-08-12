@@ -16,21 +16,23 @@ import (
 )
 
 type sendPayload struct {
-	CustomerID        int64               `json:"customer_id"`
-	RunID             string              `json:"run_id"`
-	CampaignID        string              `json:"campaign_id,omitempty"`
-	Template          string              `json:"template"`
-	Language          string              `json:"language"`
-	Category          string              `json:"category"`
-	TrackedURL        string              `json:"tracked_url,omitempty"`
-	HeaderImageURL    string              `json:"header_image_url,omitempty"`
-	Params            map[string]string   `json:"params,omitempty"`
-	Conditions        workflow.Conditions `json:"conditions,omitempty"`
-	FrequencyMessages int                 `json:"frequency_messages"`
-	FrequencyWindow   string              `json:"frequency_window"`
-	Timezone          string              `json:"timezone,omitempty"`
-	QuietStart        string              `json:"quiet_start,omitempty"`
-	QuietEnd          string              `json:"quiet_end,omitempty"`
+	CustomerID                       int64               `json:"customer_id"`
+	RunID                            string              `json:"run_id"`
+	CampaignID                       string              `json:"campaign_id,omitempty"`
+	Template                         string              `json:"template"`
+	Language                         string              `json:"language"`
+	Category                         string              `json:"category"`
+	TrackedURL                       string              `json:"tracked_url,omitempty"`
+	HeaderImageURL                   string              `json:"header_image_url,omitempty"`
+	Params                           map[string]string   `json:"params,omitempty"`
+	Conditions                       workflow.Conditions `json:"conditions,omitempty"`
+	FrequencyMessages                int                 `json:"frequency_messages"`
+	FrequencyWindow                  string              `json:"frequency_window"`
+	Timezone                         string              `json:"timezone,omitempty"`
+	QuietStart                       string              `json:"quiet_start,omitempty"`
+	QuietEnd                         string              `json:"quiet_end,omitempty"`
+	DeliveryRetry                    bool                `json:"delivery_retry,omitempty"`
+	DeliveryRetryOriginalScheduledAt string              `json:"delivery_retry_original_scheduled_at,omitempty"`
 }
 
 func (p *Processor) sendWhatsApp(ctx context.Context, job store.Job) error {
@@ -117,7 +119,7 @@ func (p *Processor) sendWhatsApp(ctx context.Context, job store.Job) error {
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM outbound_messages WHERE customer_id=? AND attempted_at>=? AND idempotency_key<>?`, payload.CustomerID, time.Now().Add(-window).UTC().Format(time.RFC3339Nano), idempotency).Scan(&count); err != nil {
 		return err
 	}
-	if count >= payload.FrequencyMessages {
+	if !payload.DeliveryRetry && count >= payload.FrequencyMessages {
 		if err := tx.Rollback(); err != nil {
 			return err
 		}
@@ -194,6 +196,19 @@ func (p *Processor) sendWhatsApp(ctx context.Context, job store.Job) error {
 }
 
 func (p *Processor) evaluateStepConditions(ctx context.Context, payload sendPayload) (bool, string, error) {
+	if payload.DeliveryRetry {
+		original, err := time.Parse(time.RFC3339Nano, payload.DeliveryRetryOriginalScheduledAt)
+		if err != nil {
+			return false, "", errors.New("delivery retry is missing its original schedule time")
+		}
+		var orders int
+		if err := p.Store.DB.QueryRowContext(ctx, `SELECT count(*) FROM orders WHERE customer_id=? AND processed_at>? AND cancelled_at IS NULL AND refunded_at IS NULL AND return_recorded_at IS NULL`, payload.CustomerID, original.UTC().Format(time.RFC3339Nano)).Scan(&orders); err != nil {
+			return false, "", err
+		}
+		if orders > 0 {
+			return false, "customer ordered after the original campaign schedule", nil
+		}
+	}
 	conditions := payload.Conditions
 	if conditions.OrderNotCancelled || conditions.OrderNotRefunded {
 		if payload.RunID == "" {

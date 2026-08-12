@@ -33,6 +33,7 @@ func (s *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("GET /webhooks/meta", s.metaVerify)
 	mux.HandleFunc("POST /webhooks/meta", s.metaWebhook)
 	mux.HandleFunc("POST /webhooks/shopify", s.shopifyWebhook)
+	mux.HandleFunc("POST /webhooks/gokwik/{token}", s.goKwikWebhook)
 	mux.HandleFunc("GET /r/{token}", s.redirect)
 	mux.Handle("GET /metrics", s.metricsAuthenticated(http.HandlerFunc(s.dashboard)))
 	mux.Handle("GET /metrics/assets/dashboard.css", s.metricsAuthenticated(http.HandlerFunc(s.dashboardStyles)))
@@ -128,6 +129,32 @@ func (s *HTTPServer) shopifyWebhook(w http.ResponseWriter, r *http.Request) {
 	inserted, err := s.Store.RecordWebhook(r.Context(), store.WebhookEvent{Provider: "shopify", EventID: eventID, Topic: topic, Payload: body}, time.Now())
 	if err != nil {
 		s.Logger.Error("record Shopify webhook", "error", err)
+		http.Error(w, "temporary failure", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accepted": true, "duplicate": !inserted})
+}
+
+func (s *HTTPServer) goKwikWebhook(w http.ResponseWriter, r *http.Request) {
+	configured := strings.TrimSpace(s.Config.GoKwikWebhookToken)
+	supplied := strings.TrimSpace(r.PathValue("token"))
+	if configured == "" || subtle.ConstantTimeCompare([]byte(supplied), []byte(configured)) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+	body, ok := readBody(w, r, 2<<20)
+	if !ok {
+		return
+	}
+	if !json.Valid(body) {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	digest := sha256.Sum256(body)
+	eventID := hex.EncodeToString(digest[:])
+	inserted, err := s.Store.RecordWebhook(r.Context(), store.WebhookEvent{Provider: "gokwik", EventID: eventID, Topic: "abandoned_checkout", Payload: body}, time.Now())
+	if err != nil {
+		s.Logger.Error("record GoKwik webhook", "error", err)
 		http.Error(w, "temporary failure", http.StatusInternalServerError)
 		return
 	}
@@ -839,6 +866,9 @@ func (s *HTTPServer) requestLog(next http.Handler) http.Handler {
 func safePath(path string) string {
 	if strings.HasPrefix(path, "/r/") {
 		return "/r/[redacted]"
+	}
+	if strings.HasPrefix(path, "/webhooks/gokwik/") {
+		return "/webhooks/gokwik/[redacted]"
 	}
 	return path
 }

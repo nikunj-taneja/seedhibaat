@@ -197,6 +197,8 @@ func (p *Processor) processWebhook(ctx context.Context, event store.WebhookEvent
 		return p.processMetaWebhook(ctx, event.Payload)
 	case "shopify":
 		return p.processShopifyWebhook(ctx, event)
+	case "gokwik":
+		return nil
 	default:
 		return fmt.Errorf("unknown webhook provider %q", event.Provider)
 	}
@@ -270,8 +272,10 @@ func (p *Processor) recordMetaStatus(ctx context.Context, status meta.MessageSta
 			return err
 		}
 	}
+	permanentDeliveryFailure := false
 	if status.Status == "failed" && len(status.Errors) > 0 {
 		e := status.Errors[0]
+		permanentDeliveryFailure = e.Code == 131026 || e.Code == 131050
 		_, err = tx.ExecContext(ctx, `UPDATE outbound_messages SET failure_code=?,failure_reason=? WHERE id=?`, strconv.Itoa(e.Code), truncate(safeLogError(errors.New(e.Title+": "+e.Message+" "+e.ErrorData.Details)), 500), messageID)
 		if err != nil {
 			return err
@@ -303,7 +307,47 @@ func (p *Processor) recordMetaStatus(ctx context.Context, status meta.MessageSta
 			}
 		}
 	}
+	if status.Status == "failed" && !permanentDeliveryFailure {
+		if err := enqueueCampaignDeliveryRetryTx(ctx, tx, messageID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+func enqueueCampaignDeliveryRetryTx(ctx context.Context, tx *sql.Tx, messageID string) error {
+	var jobID, campaignID, payloadJSON, scheduledAt, idempotency string
+	err := tx.QueryRowContext(ctx, `SELECT m.job_id,m.campaign_id,j.payload,j.scheduled_at,j.idempotency_key
+		FROM outbound_messages m JOIN scheduled_jobs j ON j.id=m.job_id
+		WHERE m.id=? AND m.campaign_id IS NOT NULL`, messageID).Scan(&jobID, &campaignID, &payloadJSON, &scheduledAt, &idempotency)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var payload sendPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return err
+	}
+	if payload.DeliveryRetry {
+		return nil
+	}
+	original, err := time.Parse(time.RFC3339Nano, scheduledAt)
+	if err != nil {
+		return err
+	}
+	payload.DeliveryRetry = true
+	payload.DeliveryRetryOriginalScheduledAt = original.UTC().Format(time.RFC3339Nano)
+	retryPayload, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	retryAt := original.Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx, `INSERT INTO scheduled_jobs(id,step_id,idempotency_key,kind,payload,scheduled_at,available_at,max_attempts,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, store.NewID("job"), "delivery_retry_24h", idempotency+":delivery-retry-24h", "send_whatsapp", retryPayload, retryAt, retryAt, 1, now, now)
+	return err
 }
 
 func cancelCustomerWorkTx(ctx context.Context, tx *sql.Tx, customerID int64, reason, now string) error {

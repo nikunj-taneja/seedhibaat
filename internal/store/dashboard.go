@@ -30,6 +30,7 @@ type PerformanceRow struct {
 	Conversions         int64
 	RevenueMinor        int64
 	Currencies          string
+	MarketingDelivered  int64
 }
 
 type ActiveWorkflowRow struct {
@@ -131,7 +132,8 @@ func (s *Store) PerformanceBreakdown(ctx context.Context, from, to time.Time) ([
 			count(DISTINCT CASE WHEN ct.conversions > 0 THEN b.customer_id END),
 			coalesce(sum(ct.conversions),0),
 			coalesce(sum(ct.revenue_minor),0),
-			coalesce(group_concat(DISTINCT ct.currencies),'')
+			coalesce(group_concat(DISTINCT ct.currencies),''),
+			count(*) FILTER (WHERE b.delivered_at IS NOT NULL AND b.category='MARKETING')
 		FROM base b
 		LEFT JOIN link_totals lt ON lt.message_id=b.id
 		LEFT JOIN conversion_totals ct ON ct.message_id=b.id
@@ -163,6 +165,7 @@ func (s *Store) PerformanceBreakdown(ctx context.Context, from, to time.Time) ([
 			&row.Conversions,
 			&row.RevenueMinor,
 			&row.Currencies,
+			&row.MarketingDelivered,
 		); err != nil {
 			return nil, err
 		}

@@ -20,7 +20,7 @@
       <div>
         <p class="eyebrow">MESSAGE PERFORMANCE</p>
         <h1>Your WhatsApp analytics</h1>
-        <p class="lede">Delivery, reads, clicks, conversions, and attributed revenue.</p>
+        <p class="lede">Delivery, reads, clicks, conversions, attributed revenue, spend, and ROAS.</p>
       </div>
       <div class="range-card">
         <span class="label">REPORTING WINDOW</span>
@@ -79,6 +79,8 @@
         <div class="attribution-grid">
           <div><span>Converted recipients</span><strong>{{.Conversions}}</strong></div>
           <div><span>Conversion rate</span><strong>{{.ConversionRate}}</strong></div>
+		  <div><span>Estimated spend</span><strong>{{.Spend}}</strong></div>
+		  <div><span>ROAS</span><strong>{{.ROAS}}</strong></div>
         </div>
         <div class="notice">
           <strong>How to read this</strong>
@@ -169,7 +171,7 @@
         <table>
           <thead>
             <tr>
-              <th>Source</th><th>Template</th><th>Accepted</th><th>Delivered</th><th>Read</th><th>Clicks</th><th>CTR</th><th>Converted</th><th>Revenue</th><th>Failed</th>
+              <th>Source</th><th>Template</th><th>Accepted</th><th>Delivered</th><th>Read</th><th>Clicks</th><th>CTR</th><th>Converted</th><th>Revenue</th><th>Spend</th><th>ROAS</th><th>Failed</th>
             </tr>
           </thead>
           <tbody>
@@ -177,7 +179,7 @@
             <tr>
               <td><span class="source-kind">{{.Kind}}</span><strong>{{.Name}}</strong></td>
               <td><code>{{.Template}}</code></td>
-              <td>{{.Accepted}}</td><td>{{.Delivered}}</td><td>{{.ReadRate}}</td><td>{{.Clicks}}</td><td>{{.CTR}}</td><td>{{.Converted}}</td><td><strong>{{.Revenue}}</strong></td><td>{{.Failed}}</td>
+              <td>{{.Accepted}}</td><td>{{.Delivered}}</td><td>{{.ReadRate}}</td><td>{{.Clicks}}</td><td>{{.CTR}}</td><td>{{.Converted}}</td><td><strong>{{.Revenue}}</strong></td><td>{{.Spend}}</td><td>{{.ROAS}}</td><td>{{.Failed}}</td>
             </tr>
           {{end}}
           </tbody>

@@ -61,6 +61,8 @@ type dashboardRow struct {
 	CTR       string
 	Converted int64
 	Revenue   string
+	Spend     string
+	ROAS      string
 	Failed    int64
 }
 
@@ -94,6 +96,8 @@ type dashboardView struct {
 	ConversionRate    string
 	OptOuts           int64
 	Replies           int64
+	Spend             string
+	ROAS              string
 	Empty             bool
 }
 
@@ -194,11 +198,26 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		Replies:           metrics.Replies,
 		Empty:             metrics.Attempted == 0,
 	}
+	var marketingDelivered int64
+	for _, item := range breakdown {
+		marketingDelivered += item.MarketingDelivered
+	}
+	spendMicros := marketingDelivered * s.Config.MarketingMessageCostMicros
+	view.Spend = "—"
+	view.ROAS = "—"
+	if s.Config.MarketingMessageCostMicros > 0 {
+		view.Spend = formatINRMicros(spendMicros)
+		if revenue, ok := revenueForCurrency(metrics.RevenueByCurrency, "INR"); ok && spendMicros > 0 {
+			view.ROAS = formatROAS(float64(revenue*10000) / float64(spendMicros))
+		}
+	}
 	view.Cards = []dashboardCard{
 		{Label: "Delivered", Value: comma(metrics.Delivered), Note: percent(metrics.DeliveryRate) + " of accepted", Tone: "green"},
 		{Label: "Read rate", Value: percent(metrics.ObservedReadRate), Note: comma(metrics.ObservedRead) + " Meta read receipts", Tone: "green"},
 		{Label: "Unique CTR", Value: percent(metrics.UniqueCTR), Note: comma(metrics.UniqueClicks) + " unique clickers", Tone: "green"},
 		{Label: "Attributed revenue", Value: view.Revenue, Note: comma(metrics.ConvertedRecipients) + " converted recipients", Tone: "green"},
+		{Label: "Estimated spend", Value: view.Spend, Note: comma(marketingDelivered) + " delivered marketing messages", Tone: "green"},
+		{Label: "ROAS", Value: view.ROAS, Note: "Attributed revenue ÷ estimated spend", Tone: "green"},
 	}
 	maximum := metrics.Attempted
 	if maximum < 1 {
@@ -224,8 +243,17 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 			ctr = float64(item.UniqueClicks) / float64(item.DeliveredRecipients)
 		}
 		revenue := "—"
+		spend := "—"
+		roas := "—"
 		if item.RevenueMinor != 0 {
 			revenue = formatSingleRevenue(item.Currencies, item.RevenueMinor)
+		}
+		rowSpendMicros := item.MarketingDelivered * s.Config.MarketingMessageCostMicros
+		if s.Config.MarketingMessageCostMicros > 0 {
+			spend = formatINRMicros(rowSpendMicros)
+			if item.Currencies == "INR" && rowSpendMicros > 0 {
+				roas = formatROAS(float64(item.RevenueMinor*10000) / float64(rowSpendMicros))
+			}
 		}
 		view.Rows = append(view.Rows, dashboardRow{
 			Kind:      item.Kind,
@@ -238,6 +266,8 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 			CTR:       percent(ctr),
 			Converted: item.ConvertedRecipients,
 			Revenue:   revenue,
+			Spend:     spend,
+			ROAS:      roas,
 			Failed:    item.Failed,
 		})
 	}
@@ -357,6 +387,21 @@ func formatSingleRevenue(currency string, minor int64) string {
 		}
 		return currency + " " + strconv.FormatFloat(amount, 'f', 2, 64)
 	}
+}
+
+func revenueForCurrency(values []store.CurrencyAmount, currency string) (int64, bool) {
+	if len(values) != 1 || values[0].Currency != currency {
+		return 0, false
+	}
+	return values[0].AmountMinor, true
+}
+
+func formatROAS(value float64) string {
+	return strconv.FormatFloat(value, 'f', 2, 64) + "×"
+}
+
+func formatINRMicros(value int64) string {
+	return "₹" + strconv.FormatFloat(float64(value)/1_000_000, 'f', 2, 64)
 }
 
 func humanDuration(value time.Duration) string {
