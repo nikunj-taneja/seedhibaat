@@ -31,11 +31,9 @@ type dashboardCard struct {
 }
 
 type dashboardFunnelStep struct {
-	Label   string
-	Value   int64
-	Max     int64
-	Percent string
-	Display string
+	Label string
+	Value int64
+	Max   int64
 }
 
 type dashboardBar struct {
@@ -218,6 +216,7 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		{Label: "Delivered", Value: comma(metrics.Delivered), Note: percent(metrics.DeliveryRate) + " of accepted", Tone: "green"},
 		{Label: "Read rate", Value: percent(metrics.ObservedReadRate), Note: comma(metrics.ObservedRead) + " Meta read receipts", Tone: "green"},
 		{Label: "Unique CTR", Value: percent(metrics.UniqueCTR), Note: comma(metrics.UniqueClicks) + " unique clickers", Tone: "green"},
+		{Label: "CVR", Value: percent(metrics.ConversionRate), Note: comma(metrics.ConvertedRecipients) + " converted ÷ " + comma(metrics.DeliveredRecipients) + " delivered recipients", Tone: "green"},
 		{Label: "Attributed revenue", Value: view.Revenue, Note: comma(metrics.ConvertedRecipients) + " converted recipients", Tone: "green"},
 		{Label: "Estimated spend", Value: view.Spend, Note: comma(marketingDelivered) + " delivered marketing messages", Tone: "green"},
 		{Label: "ROAS", Value: view.ROAS, Note: "Attributed revenue ÷ estimated spend", Tone: "green"},
@@ -309,12 +308,7 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func funnelStep(label string, value, maximum int64) dashboardFunnelStep {
-	rate := 0.0
-	if maximum > 0 {
-		rate = float64(value) / float64(maximum)
-	}
-	formatted := percent(rate)
-	return dashboardFunnelStep{Label: label, Value: value, Max: maximum, Percent: formatted, Display: comma(value) + " · " + formatted}
+	return dashboardFunnelStep{Label: label, Value: value, Max: maximum}
 }
 
 func makeChartBars(daily []store.DailyMetric) []dashboardBar {

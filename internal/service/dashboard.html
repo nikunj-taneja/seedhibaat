@@ -46,7 +46,6 @@
         <div><span>Replies</span><strong>{{.Replies}}</strong></div>
         <div><span>Opt-outs</span><strong>{{.OptOuts}}</strong></div>
         <div><span>Conversions</span><strong>{{.Conversions}}</strong></div>
-        <div><span>Conversion rate</span><strong>{{.ConversionRate}}</strong></div>
       </div>
     </section>
 
@@ -64,7 +63,7 @@
           <div class="funnel-row">
             <span>{{.Label}}</span>
             <progress max="{{.Max}}" value="{{.Value}}"></progress>
-            <strong>{{.Display}}</strong>
+            <strong>{{.Value}}</strong>
           </div>
           {{end}}
         </div>
