@@ -530,14 +530,14 @@ func (p *Processor) attributeConversion(ctx context.Context, customerID int64, o
 	if window <= 0 {
 		window = 30 * 24 * time.Hour
 	}
-	err = p.Store.DB.QueryRowContext(ctx, `SELECT id,workflow_run_id,campaign_id FROM outbound_messages WHERE customer_id=? AND accepted_at IS NOT NULL AND accepted_at<=? AND accepted_at>=? ORDER BY accepted_at DESC LIMIT 1`, customerID, orderTime.UTC().Format(time.RFC3339Nano), orderTime.Add(-window).UTC().Format(time.RFC3339Nano)).Scan(&messageID, &runID, &campaignID)
+	err = p.Store.DB.QueryRowContext(ctx, `SELECT id,workflow_run_id,campaign_id FROM outbound_messages WHERE customer_id=? AND read_at IS NOT NULL AND read_at<=? AND read_at>=? ORDER BY read_at DESC LIMIT 1`, customerID, orderTime.UTC().Format(time.RFC3339Nano), orderTime.Add(-window).UTC().Format(time.RFC3339Nano)).Scan(&messageID, &runID, &campaignID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
 		return err
 	}
-	model := "last_touch_" + window.String()
+	model := "last_read_touch_" + window.String()
 	_, err = p.Store.DB.ExecContext(ctx, `INSERT INTO conversions(order_id,message_id,campaign_id,workflow_run_id,attributed_at,amount_minor,currency,attribution_model) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, order.ID, messageID.String, nullableString(campaignID.String), nullableString(runID.String), time.Now().UTC().Format(time.RFC3339Nano), amount, order.CurrencyCode, model)
 	return err
 }

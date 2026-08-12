@@ -404,15 +404,17 @@ func TestProviderErrorsAreRedactedBeforeLogging(t *testing.T) {
 	}
 }
 
-func TestPurchaseAttributionUsesPreOrderMessageAndIsRemovedOnRefund(t *testing.T) {
+func TestPurchaseAttributionUsesPreOrderReadAndIsRemovedOnRefund(t *testing.T) {
 	processor, database := testProcessor(t)
 	defer database.Close()
 	processor.Config.AttributionWindow = 7 * 24 * time.Hour
 	now := time.Now().UTC()
 	stamp := now.Format(time.RFC3339Nano)
 	_, _ = database.DB.Exec(`INSERT INTO customers(id,shopify_id,created_at,updated_at) VALUES(1,'customer',?,?)`, stamp, stamp)
-	accepted := now.Add(-time.Hour).Format(time.RFC3339Nano)
-	_, _ = database.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,campaign_id,template_name,template_language,category,idempotency_key,state,attempted_at,accepted_at,created_at,updated_at) VALUES('message',1,'campaign','template','en_US','MARKETING','key','accepted',?,?,?,?)`, accepted, accepted, accepted, accepted)
+	accepted := now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
+	read := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	_, _ = database.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,campaign_id,template_name,template_language,category,idempotency_key,state,attempted_at,accepted_at,read_at,created_at,updated_at) VALUES('message',1,'campaign','template','en_US','MARKETING','key','read',?,?,?,?,?)`, accepted, accepted, read, accepted, read)
+	_, _ = database.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,campaign_id,template_name,template_language,category,idempotency_key,state,attempted_at,accepted_at,created_at,updated_at) VALUES('newer-unread',1,'wrong-campaign','template','en_US','MARKETING','newer-key','accepted',?,?,?,?)`, read, read, read, read)
 	order := deliveredExampleOrder("attributed-order", "customer")
 	order.ProcessedAt = now.Format(time.RFC3339)
 	order.UpdatedAt = order.ProcessedAt
@@ -434,6 +436,27 @@ func TestPurchaseAttributionUsesPreOrderMessageAndIsRemovedOnRefund(t *testing.T
 	_ = database.DB.QueryRow(`SELECT count(*) FROM conversions WHERE order_id=?`, order.ID).Scan(&conversions)
 	if conversions != 0 {
 		t.Fatalf("refunded conversion count=%d", conversions)
+	}
+}
+
+func TestPurchaseAttributionIgnoresUnreadMessages(t *testing.T) {
+	processor, database := testProcessor(t)
+	defer database.Close()
+	now := time.Now().UTC()
+	stamp := now.Format(time.RFC3339Nano)
+	_, _ = database.DB.Exec(`INSERT INTO customers(id,shopify_id,created_at,updated_at) VALUES(1,'customer',?,?)`, stamp, stamp)
+	accepted := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	_, _ = database.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,template_name,template_language,category,idempotency_key,state,attempted_at,accepted_at,created_at,updated_at) VALUES('unread',1,'template','en_US','MARKETING','key','delivered',?,?,?,?)`, accepted, accepted, accepted, accepted)
+	order := deliveredExampleOrder("unattributed-order", "customer")
+	order.ProcessedAt = now.Format(time.RFC3339)
+	order.UpdatedAt = order.ProcessedAt
+	if err := processor.upsertOrder(context.Background(), order); err != nil {
+		t.Fatal(err)
+	}
+	var conversions int
+	_ = database.DB.QueryRow(`SELECT count(*) FROM conversions WHERE order_id=?`, order.ID).Scan(&conversions)
+	if conversions != 0 {
+		t.Fatalf("unread conversion count=%d", conversions)
 	}
 }
 
