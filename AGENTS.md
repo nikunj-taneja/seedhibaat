@@ -20,6 +20,20 @@ optional read-only aggregate metrics dashboard.
   for a live send.
 - Before every live send, state the exact template, validated message count,
   and unique recipient count. Require explicit approval for those values.
+- Before every campaign activation, workflow activation, live test, resend, or
+  replay, validate the complete rendered message contract, not only the
+  template name and audience. Confirm the approved template exists on the
+  configured WABA in the intended language/category; every required header
+  media value and ordered body/header parameter is present; every dynamic URL
+  button has a parameter; every tracked link has the approved final HTTPS
+  destination; and all externally fetched media and destinations return a
+  successful response. Compare the frozen job payload shape with the approved
+  definition before queueing. If any required field is absent or differs, do
+  not activate or replay.
+- A retry or replay must preserve the exact approved render contract from the
+  original intended send, including media, parameters, button URL shape, and
+  tracked destination. Reconcile and repair pre-acceptance failed payloads
+  before replay; never infer missing fields from the template name alone.
 - Never add `--send --yes`, `--submit --yes`, campaign activation, production
   workflow activation, or `--allow-resend` based on implied intent.
 - Never submit a template to Meta until the exact name, language, category,
