@@ -530,6 +530,8 @@ type campaignRequest struct {
 	Template                string             `json:"template"`
 	Language                string             `json:"language"`
 	TrackedURL              string             `json:"tracked_url,omitempty"`
+	HeaderImageURL          string             `json:"header_image_url,omitempty"`
+	Params                  map[string]string  `json:"params,omitempty"`
 	ScheduledAt             string             `json:"scheduled_at,omitempty"`
 	ConfirmedRecipientCount int                `json:"confirmed_recipient_count,omitempty"`
 	FrequencyMessages       int                `json:"frequency_messages,omitempty"`
@@ -563,6 +565,20 @@ func (s *HTTPServer) createCampaign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if request.HeaderImageURL != "" {
+		if err := workflow.ValidateHeaderImageURL(request.HeaderImageURL); err != nil {
+			http.Error(w, "header image URL must be a valid public HTTPS image URL", 400)
+			return
+		}
+	}
+	if _, err := workflow.OrderedParameterBindings(request.Params, "header"); err != nil {
+		http.Error(w, "invalid header template parameters", 400)
+		return
+	}
+	if _, err := workflow.OrderedParameterBindings(request.Params, "body"); err != nil {
+		http.Error(w, "invalid body template parameters", 400)
+		return
+	}
 	if request.ScheduledAt != "" {
 		if _, err := time.Parse(time.RFC3339, request.ScheduledAt); err != nil {
 			http.Error(w, "scheduled_at must use RFC3339", 400)
@@ -589,9 +605,10 @@ func (s *HTTPServer) createCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	segmentJSON, _ := json.Marshal(request.Segment)
+	paramsJSON, _ := json.Marshal(request.Params)
 	exclusionsJSON, _ := json.Marshal(result.Exclusions)
 	id := store.NewID("campaign")
-	_, err = s.Store.DB.ExecContext(r.Context(), `INSERT INTO campaigns(id,name,segment_json,exclusions_json,template_name,template_language,scheduled_at,state,audience_count,created_at,tracked_url,frequency_messages,frequency_window) VALUES(?,?,?,?,?,?,?,'draft',?,?,?,?,?)`, id, request.Name, string(segmentJSON), string(exclusionsJSON), request.Template, request.Language, nullableHTTP(request.ScheduledAt), result.EligibleCount, time.Now().UTC().Format(time.RFC3339Nano), nullableHTTP(request.TrackedURL), request.FrequencyMessages, request.FrequencyWindow)
+	_, err = s.Store.DB.ExecContext(r.Context(), `INSERT INTO campaigns(id,name,segment_json,exclusions_json,template_name,template_language,scheduled_at,state,audience_count,created_at,tracked_url,frequency_messages,frequency_window,header_image_url,template_params_json) VALUES(?,?,?,?,?,?,?,'draft',?,?,?,?,?,?,?)`, id, request.Name, string(segmentJSON), string(exclusionsJSON), request.Template, request.Language, nullableHTTP(request.ScheduledAt), result.EligibleCount, time.Now().UTC().Format(time.RFC3339Nano), nullableHTTP(request.TrackedURL), request.FrequencyMessages, request.FrequencyWindow, nullableHTTP(request.HeaderImageURL), string(paramsJSON))
 	if err != nil {
 		http.Error(w, "failed", 500)
 		return
@@ -613,8 +630,9 @@ func (s *HTTPServer) getCampaign(w http.ResponseWriter, r *http.Request) {
 	var count int
 	var trackedURL sql.NullString
 	var frequencyMessages int
-	var frequencyWindow string
-	err := s.Store.DB.QueryRowContext(r.Context(), `SELECT id,name,segment_json,exclusions_json,template_name,template_language,scheduled_at,state,audience_count,created_at,tracked_url,frequency_messages,frequency_window FROM campaigns WHERE id=?`, r.PathValue("id")).Scan(&id, &name, &segmentJSON, &exclusionsJSON, &template, &language, &scheduled, &state, &count, &created, &trackedURL, &frequencyMessages, &frequencyWindow)
+	var frequencyWindow, paramsJSON string
+	var headerImageURL sql.NullString
+	err := s.Store.DB.QueryRowContext(r.Context(), `SELECT id,name,segment_json,exclusions_json,template_name,template_language,scheduled_at,state,audience_count,created_at,tracked_url,frequency_messages,frequency_window,header_image_url,template_params_json FROM campaigns WHERE id=?`, r.PathValue("id")).Scan(&id, &name, &segmentJSON, &exclusionsJSON, &template, &language, &scheduled, &state, &count, &created, &trackedURL, &frequencyMessages, &frequencyWindow, &headerImageURL, &paramsJSON)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
@@ -623,7 +641,9 @@ func (s *HTTPServer) getCampaign(w http.ResponseWriter, r *http.Request) {
 	var exclusions any
 	_ = json.Unmarshal([]byte(segmentJSON), &definition)
 	_ = json.Unmarshal([]byte(exclusionsJSON), &exclusions)
-	writeJSON(w, 200, map[string]any{"id": id, "name": name, "segment": definition.Public(), "exclusions": exclusions, "template": template, "language": language, "scheduled_at": nullableJSON(scheduled), "state": state, "audience_count": count, "created_at": created, "tracked_url": nullableJSON(trackedURL), "frequency_messages": frequencyMessages, "frequency_window": frequencyWindow})
+	var params map[string]string
+	_ = json.Unmarshal([]byte(paramsJSON), &params)
+	writeJSON(w, 200, map[string]any{"id": id, "name": name, "segment": definition.Public(), "exclusions": exclusions, "template": template, "language": language, "scheduled_at": nullableJSON(scheduled), "state": state, "audience_count": count, "created_at": created, "tracked_url": nullableJSON(trackedURL), "frequency_messages": frequencyMessages, "frequency_window": frequencyWindow, "has_header_image": headerImageURL.Valid, "template_parameter_count": len(params)})
 }
 func (s *HTTPServer) activateCampaign(w http.ResponseWriter, r *http.Request) {
 	if !s.Config.ProductionFlowEnabled || !s.Config.OutboundSendingEnabled {
@@ -635,11 +655,11 @@ func (s *HTTPServer) activateCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	campaignID := r.PathValue("id")
-	var template, language, state, scheduledText, frequencyWindow, segmentJSON string
+	var template, language, state, scheduledText, frequencyWindow, segmentJSON, paramsJSON string
 	var audience int
-	var scheduled, trackedURL sql.NullString
+	var scheduled, trackedURL, headerImageURL sql.NullString
 	var frequencyMessages int
-	err := s.Store.DB.QueryRowContext(r.Context(), `SELECT template_name,template_language,state,scheduled_at,audience_count,tracked_url,frequency_messages,frequency_window,segment_json FROM campaigns WHERE id=?`, campaignID).Scan(&template, &language, &state, &scheduled, &audience, &trackedURL, &frequencyMessages, &frequencyWindow, &segmentJSON)
+	err := s.Store.DB.QueryRowContext(r.Context(), `SELECT template_name,template_language,state,scheduled_at,audience_count,tracked_url,frequency_messages,frequency_window,segment_json,header_image_url,template_params_json FROM campaigns WHERE id=?`, campaignID).Scan(&template, &language, &state, &scheduled, &audience, &trackedURL, &frequencyMessages, &frequencyWindow, &segmentJSON, &headerImageURL, &paramsJSON)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
@@ -702,8 +722,13 @@ func (s *HTTPServer) activateCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	activatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	var params map[string]string
+	if err := json.Unmarshal([]byte(paramsJSON), &params); err != nil {
+		http.Error(w, "stored template parameters are invalid", 500)
+		return
+	}
 	for _, customerID := range customerIDs {
-		payload, _ := json.Marshal(sendPayload{CustomerID: customerID, CampaignID: campaignID, Template: template, Language: language, Category: "MARKETING", TrackedURL: trackedURL.String, FrequencyMessages: frequencyMessages, FrequencyWindow: frequencyWindow})
+		payload, _ := json.Marshal(sendPayload{CustomerID: customerID, CampaignID: campaignID, Template: template, Language: language, Category: "MARKETING", TrackedURL: trackedURL.String, HeaderImageURL: headerImageURL.String, Params: params, FrequencyMessages: frequencyMessages, FrequencyWindow: frequencyWindow})
 		jobID := store.NewID("job")
 		result, err := tx.ExecContext(r.Context(), `INSERT INTO scheduled_jobs(id,step_id,idempotency_key,kind,payload,scheduled_at,available_at,max_attempts,created_at,updated_at)
 			VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, jobID, "campaign", "campaign:"+campaignID+":"+fmt.Sprint(customerID), "send_whatsapp", payload, at.UTC().Format(time.RFC3339Nano), at.UTC().Format(time.RFC3339Nano), 8, activatedAt, activatedAt)
