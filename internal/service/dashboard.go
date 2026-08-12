@@ -35,6 +35,7 @@ type dashboardFunnelStep struct {
 	Value   int64
 	Max     int64
 	Percent string
+	Display string
 }
 
 type dashboardBar struct {
@@ -312,7 +313,8 @@ func funnelStep(label string, value, maximum int64) dashboardFunnelStep {
 	if maximum > 0 {
 		rate = float64(value) / float64(maximum)
 	}
-	return dashboardFunnelStep{Label: label, Value: value, Max: maximum, Percent: percent(rate)}
+	formatted := percent(rate)
+	return dashboardFunnelStep{Label: label, Value: value, Max: maximum, Percent: formatted, Display: comma(value) + " · " + formatted}
 }
 
 func makeChartBars(daily []store.DailyMetric) []dashboardBar {
