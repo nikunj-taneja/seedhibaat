@@ -281,7 +281,7 @@ steps:
 }
 
 func TestDailyChartBarsAreCenteredAndDoNotOverlap(t *testing.T) {
-	bars := makeChartBars([]store.DailyMetric{
+	bars, ticks := makeChart([]store.DailyMetric{
 		{Date: "1 Jan", Delivered: 3, UniqueClicks: 1},
 		{Date: "2 Jan", Delivered: 2, UniqueClicks: 2},
 	})
@@ -289,15 +289,58 @@ func TestDailyChartBarsAreCenteredAndDoNotOverlap(t *testing.T) {
 		t.Fatalf("bars=%d", len(bars))
 	}
 	for _, bar := range bars {
-		if bar.ClickX < bar.X+9 {
-			t.Fatalf("overlapping bars: delivered_x=%d click_x=%d", bar.X, bar.ClickX)
+		if bar.ClickX < bar.X+bar.Width {
+			t.Fatalf("overlapping bars: delivered_x=%d width=%d click_x=%d", bar.X, bar.Width, bar.ClickX)
 		}
-		if bar.LabelX <= bar.X || bar.LabelX >= bar.ClickX+6 {
+		if bar.LabelX <= bar.X || bar.LabelX >= bar.ClickX+bar.ClickW {
 			t.Fatalf("label is not centered under pair: %+v", bar)
 		}
+		if bar.TopY > bar.Y || bar.TopY > bar.ClickY {
+			t.Fatalf("tooltip anchor is below a bar top: %+v", bar)
+		}
 	}
-	if bars[0].X < 50 || bars[len(bars)-1].ClickX+6 > 930 {
+	if bars[0].X < 50 || bars[len(bars)-1].ClickX+bars[len(bars)-1].ClickW > 930 {
 		t.Fatalf("bars escaped plot bounds: first=%+v last=%+v", bars[0], bars[len(bars)-1])
+	}
+	if len(ticks) != 4 || ticks[0].Label != "0" {
+		t.Fatalf("axis ticks=%+v", ticks)
+	}
+	if ticks[len(ticks)-1].Y >= ticks[0].Y {
+		t.Fatalf("axis ticks are not ordered from the baseline up: %+v", ticks)
+	}
+}
+
+func TestChartAxisRoundsUpToReadableSteps(t *testing.T) {
+	for _, testCase := range []struct {
+		peak int64
+		want string
+	}{
+		{peak: 3, want: "1"},
+		{peak: 72, want: "50"},
+		{peak: 1000, want: "500"},
+		{peak: 4200, want: "2k"},
+	} {
+		_, ticks := makeChart([]store.DailyMetric{{Date: "1 Jan", Delivered: testCase.peak}})
+		if ticks[1].Label != testCase.want {
+			t.Fatalf("peak=%d first step=%q want %q", testCase.peak, ticks[1].Label, testCase.want)
+		}
+	}
+}
+
+func TestChartBarsStayVisibleOnShortRanges(t *testing.T) {
+	single, _ := makeChart([]store.DailyMetric{{Date: "1 Jan", Delivered: 5, UniqueClicks: 2}})
+	if single[0].Width < 12 {
+		t.Fatalf("single-day bar is too thin to read: width=%d", single[0].Width)
+	}
+	daily := make([]store.DailyMetric, 30)
+	for index := range daily {
+		daily[index] = store.DailyMetric{Date: "1 Jan", Delivered: 5, UniqueClicks: 2}
+	}
+	month, _ := makeChart(daily)
+	for index := 1; index < len(month); index++ {
+		if month[index].X < month[index-1].ClickX+month[index-1].ClickW {
+			t.Fatalf("bars collide at 30 days: %+v %+v", month[index-1], month[index])
+		}
 	}
 }
 

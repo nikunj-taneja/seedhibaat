@@ -38,17 +38,26 @@ type dashboardFunnelStep struct {
 
 type dashboardBar struct {
 	X         int
+	Width     int
 	ClickX    int
+	ClickW    int
 	HitX      int
+	HitW      int
 	LabelX    int
 	Y         int
 	Height    int
 	ClickY    int
 	ClickH    int
+	TopY      int
 	Label     string
 	Delivered int64
 	Clicks    int64
 	ShowLabel bool
+}
+
+type dashboardTick struct {
+	Y     int
+	Label string
 }
 
 type dashboardRow struct {
@@ -89,6 +98,7 @@ type dashboardView struct {
 	Cards             []dashboardCard
 	Funnel            []dashboardFunnelStep
 	Bars              []dashboardBar
+	Ticks             []dashboardTick
 	Rows              []dashboardRow
 	Workflows         []dashboardWorkflow
 	AttributionWindow string
@@ -236,7 +246,7 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		funnelStep("Unique click", metrics.UniqueClicks, maximum),
 		funnelStep("Converted", metrics.ConvertedRecipients, maximum),
 	}
-	view.Bars = makeChartBars(daily)
+	view.Bars, view.Ticks = makeChart(daily)
 	for _, item := range breakdown {
 		readRate := 0.0
 		ctr := 0.0
@@ -313,49 +323,121 @@ func funnelStep(label string, value, maximum int64) dashboardFunnelStep {
 	return dashboardFunnelStep{Label: label, Value: value, Max: maximum}
 }
 
-func makeChartBars(daily []store.DailyMetric) []dashboardBar {
+// axisStep rounds a raw value up to the next 1/2/5 x power of ten so gridline
+// labels read as round numbers instead of arbitrary thirds of the peak.
+func axisStep(value int64) int64 {
+	if value <= 1 {
+		return 1
+	}
+	magnitude := int64(1)
+	for magnitude*10 <= value {
+		magnitude *= 10
+	}
+	for _, multiple := range []int64{1, 2, 5} {
+		if step := magnitude * multiple; step >= value {
+			return step
+		}
+	}
+	return magnitude * 10
+}
+
+func compactCount(value int64) string {
+	if value < 1000 {
+		return strconv.FormatInt(value, 10)
+	}
+	scaled := float64(value) / 1000
+	if scaled >= 10 || value%1000 == 0 {
+		return strconv.FormatInt(value/1000, 10) + "k"
+	}
+	return strconv.FormatFloat(scaled, 'f', 1, 64) + "k"
+}
+
+func makeChart(daily []store.DailyMetric) ([]dashboardBar, []dashboardTick) {
 	if len(daily) == 0 {
-		return nil
+		return nil, nil
 	}
-	var maximum int64
+	var peak int64
 	for _, day := range daily {
-		if day.Delivered > maximum {
-			maximum = day.Delivered
+		if day.Delivered > peak {
+			peak = day.Delivered
 		}
-		if day.UniqueClicks > maximum {
-			maximum = day.UniqueClicks
+		if day.UniqueClicks > peak {
+			peak = day.UniqueClicks
 		}
-	}
-	if maximum < 1 {
-		maximum = 1
 	}
 	const (
-		plotLeft  = 50
-		plotWidth = 880
-		baseline  = 178
+		plotLeft   = 50
+		plotRight  = 930
+		plotWidth  = plotRight - plotLeft
+		baseline   = 178
+		plotHeight = 150
+		bands      = 3
 	)
+	// Three equal bands keep the existing gridline positions, so the axis
+	// maximum has to be a whole multiple of three round steps.
+	step := axisStep((peak + bands - 1) / bands)
+	axisMax := step * bands
+	ticks := make([]dashboardTick, 0, bands+1)
+	for band := 0; band <= bands; band++ {
+		ticks = append(ticks, dashboardTick{
+			Y:     baseline - band*(plotHeight/bands),
+			Label: compactCount(step * int64(band)),
+		})
+	}
+
 	slotWidth := float64(plotWidth) / float64(len(daily))
+	// Bars grow with the slot so short ranges read as bars, not hairlines,
+	// and long ranges stay separated.
+	deliveredWidth := clampInt(int(slotWidth*0.34), 4, 18)
+	clickWidth := clampInt(int(slotWidth*0.24), 3, 13)
+	const pairGap = 2
+	pairWidth := deliveredWidth + pairGap + clickWidth
+	hitWidth := clampInt(int(slotWidth), pairWidth+6, 44)
+	labelStep := (len(daily) + 7) / 8
+	if labelStep < 1 {
+		labelStep = 1
+	}
+
 	var bars []dashboardBar
 	for index, day := range daily {
-		height := int(float64(day.Delivered) / float64(maximum) * 150)
-		clickHeight := int(float64(day.UniqueClicks) / float64(maximum) * 150)
+		height := int(float64(day.Delivered) / float64(axisMax) * plotHeight)
+		clickHeight := int(float64(day.UniqueClicks) / float64(axisMax) * plotHeight)
 		center := int(float64(plotLeft) + slotWidth*(float64(index)+0.5))
+		left := center - pairWidth/2
+		top := baseline - height
+		if clickTop := baseline - clickHeight; clickTop < top {
+			top = clickTop
+		}
 		bars = append(bars, dashboardBar{
-			X:         center - 9,
-			ClickX:    center + 2,
-			HitX:      center - 14,
+			X:         left,
+			Width:     deliveredWidth,
+			ClickX:    left + deliveredWidth + pairGap,
+			ClickW:    clickWidth,
+			HitX:      center - hitWidth/2,
+			HitW:      hitWidth,
 			LabelX:    center,
 			Y:         baseline - height,
 			Height:    height,
 			ClickY:    baseline - clickHeight,
 			ClickH:    clickHeight,
+			TopY:      top,
 			Label:     day.Date,
 			Delivered: day.Delivered,
 			Clicks:    day.UniqueClicks,
-			ShowLabel: index%5 == 0 || index == len(daily)-1,
+			ShowLabel: index%labelStep == 0 || index == len(daily)-1,
 		})
 	}
-	return bars
+	return bars, ticks
+}
+
+func clampInt(value, low, high int) int {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
 }
 
 func percent(value float64) string {

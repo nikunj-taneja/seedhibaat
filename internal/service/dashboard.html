@@ -140,18 +140,26 @@
       </div>
       <div class="chart-wrap">
         <svg class="bar-chart" viewBox="0 0 960 220" role="img" aria-label="Daily delivered messages and unique clickers">
-          <line x1="50" y1="178" x2="930" y2="178"></line>
-          <line x1="50" y1="128" x2="930" y2="128"></line>
-          <line x1="50" y1="78" x2="930" y2="78"></line>
+          {{range .Ticks}}
+          <line x1="50" y1="{{.Y}}" x2="930" y2="{{.Y}}"></line>
+          <text class="tick" x="42" y="{{.Y}}" dy="3">{{.Label}}</text>
+          {{end}}
           {{range .Bars}}
-          <g class="chart-day" tabindex="0" aria-label="{{.Label}}: {{.Delivered}} delivered, {{.Clicks}} unique clickers">
+          <g class="chart-day" tabindex="0" aria-label="{{.Label}}: {{.Delivered}} delivered, {{.Clicks}} unique clickers"
+             data-label="{{.Label}}" data-delivered="{{.Delivered}}" data-clicks="{{.Clicks}}"
+             data-center="{{.LabelX}}" data-top="{{.TopY}}">
             <title>{{.Label}} · Delivered: {{.Delivered}} · Unique clickers: {{.Clicks}}</title>
-            <rect class="delivered" x="{{.X}}" y="{{.Y}}" width="9" height="{{.Height}}" rx="4"></rect>
-            <rect class="clicked" x="{{.ClickX}}" y="{{.ClickY}}" width="6" height="{{.ClickH}}" rx="3"></rect>
-            <rect class="chart-hit" x="{{.HitX}}" y="28" width="28" height="150" fill="transparent" pointer-events="all"></rect>
+            <rect class="delivered" x="{{.X}}" y="{{.Y}}" width="{{.Width}}" height="{{.Height}}" rx="3"></rect>
+            <rect class="clicked" x="{{.ClickX}}" y="{{.ClickY}}" width="{{.ClickW}}" height="{{.ClickH}}" rx="3"></rect>
+            <rect class="chart-hit" x="{{.HitX}}" y="28" width="{{.HitW}}" height="150" fill="transparent" pointer-events="all"></rect>
           </g>
           {{if .ShowLabel}}<text x="{{.LabelX}}" y="202">{{.Label}}</text>{{end}}
           {{end}}
+          <g class="chart-tip" id="chart-tip" aria-hidden="true" hidden>
+            <rect class="chart-tip-box" x="0" y="0" width="150" height="38" rx="7"></rect>
+            <text class="chart-tip-title" x="10" y="16"></text>
+            <text class="chart-tip-detail" x="10" y="30"></text>
+          </g>
         </svg>
       </div>
     </section>
@@ -193,5 +201,40 @@
     </section>
 
   </main>
+  <script>
+    // The tooltip lives once at the end of the SVG so it paints above every
+    // bar. Without JS the native <title> on each group still works.
+    (function () {
+      var tip = document.getElementById('chart-tip');
+      if (!tip) { return; }
+      var box = tip.querySelector('.chart-tip-box');
+      var title = tip.querySelector('.chart-tip-title');
+      var detail = tip.querySelector('.chart-tip-detail');
+      var boxWidth = 150, boxHeight = 38, plotLeft = 50, plotRight = 930;
+
+      function show(group) {
+        title.textContent = group.dataset.label;
+        detail.textContent = group.dataset.delivered + ' delivered · ' + group.dataset.clicks + ' clickers';
+        var center = Number(group.dataset.center);
+        var top = Number(group.dataset.top);
+        var x = Math.min(Math.max(center - boxWidth / 2, plotLeft), plotRight - boxWidth);
+        var y = top - boxHeight - 6;
+        if (y < 2) { y = top + 6; }
+        tip.setAttribute('transform', 'translate(' + x + ',' + y + ')');
+        box.setAttribute('width', boxWidth);
+        box.setAttribute('height', boxHeight);
+        tip.removeAttribute('hidden');
+      }
+
+      function hide() { tip.setAttribute('hidden', ''); }
+
+      Array.prototype.forEach.call(document.querySelectorAll('.chart-day'), function (group) {
+        group.addEventListener('mouseenter', function () { show(group); });
+        group.addEventListener('focus', function () { show(group); });
+        group.addEventListener('mouseleave', hide);
+        group.addEventListener('blur', hide);
+      });
+    })();
+  </script>
 </body>
 </html>
