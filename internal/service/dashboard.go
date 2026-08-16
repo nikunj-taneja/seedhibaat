@@ -136,6 +136,8 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 	var from time.Time
 	var rangeLabel string
 	switch rangeName {
+	case "1d":
+		from, rangeLabel = now.AddDate(0, 0, -1), "Last 24 hours"
 	case "7d":
 		from, rangeLabel = now.AddDate(0, 0, -7), "Last 7 days"
 	case "90d":

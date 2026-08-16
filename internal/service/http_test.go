@@ -263,6 +263,21 @@ steps:
 	if response.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("cache control=%q", response.Header().Get("Cache-Control"))
 	}
+
+	request = httptest.NewRequest(http.MethodGet, "/metrics?range=1d", nil)
+	request.SetBasicAuth("operator", "a-very-long-dashboard-password-value")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dashboard 1d code=%d body=%s", response.Code, response.Body.String())
+	}
+	body = response.Body.String()
+	if !strings.Contains(body, "Last 24 hours") {
+		t.Fatalf("1d range fell back to another window")
+	}
+	if !strings.Contains(body, `href="/metrics?range=1d"`) {
+		t.Fatalf("1d range selector is missing")
+	}
 }
 
 func TestDailyChartBarsAreCenteredAndDoNotOverlap(t *testing.T) {

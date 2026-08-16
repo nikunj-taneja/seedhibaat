@@ -27,6 +27,7 @@
         <strong>{{.RangeLabel}}</strong>
         <span>{{.FromLabel}} – {{.ToLabel}}</span>
         <nav class="segments" aria-label="Reporting range">
+          <a class="{{if eq .Range "1d"}}active{{end}}" href="/metrics?range=1d">24 hours</a>
           <a class="{{if eq .Range "7d"}}active{{end}}" href="/metrics?range=7d">7 days</a>
           <a class="{{if eq .Range "30d"}}active{{end}}" href="/metrics?range=30d">30 days</a>
           <a class="{{if eq .Range "90d"}}active{{end}}" href="/metrics?range=90d">90 days</a>
