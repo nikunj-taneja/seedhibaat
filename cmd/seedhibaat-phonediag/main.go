@@ -86,6 +86,21 @@ func main() {
 			}
 		}
 	}
+	jobs, err := db.QueryContext(context.Background(), `SELECT kind, state, count(*), coalesce(max(last_error),'') FROM scheduled_jobs GROUP BY kind, state`)
+	if err == nil {
+		fmt.Println("job queue:")
+		for jobs.Next() {
+			var kind, state, lastError string
+			var n int
+			_ = jobs.Scan(&kind, &state, &n, &lastError)
+			if len(lastError) > 120 {
+				lastError = lastError[:120]
+			}
+			fmt.Printf("  %-24s %-10s %5d  %s\n", kind, state, n, lastError)
+		}
+		jobs.Close()
+	}
+
 	fmt.Printf("customers with a phone:            %d\n", total)
 	fmt.Printf("  undecryptable:                   %d\n", decryptFail)
 	fmt.Printf("  stored phone has non-digits:     %d\n", hasNonDigit)

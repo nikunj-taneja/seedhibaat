@@ -768,19 +768,15 @@ def run_customers_import(args: argparse.Namespace) -> int:
     A campaign can only target a customer the daemon already knows, and a CLI
     send can only be recorded against one. Reports counts only, never numbers.
     """
-    from .cli import normalize_phone, read_recipient_rows
+    from .cli import read_recipient_rows
 
-    rows = read_recipient_rows(args.csv, args.phone_column)
-    token, env = _shopify_token()
     default_country = args.default_country_code or os.environ.get("SEEDHIBAAT_DEFAULT_COUNTRY_CODE", "")
-    shopify_ids: list[str] = []
+    rows = read_recipient_rows(args.csv, args.phone_column, [], default_country)
+    token, env = _shopify_token()
+    records: list[dict[str, str]] = []
     unmatched = ambiguous = invalid = 0
     for row in rows:
-        try:
-            phone = normalize_phone(row[args.phone_column], default_country)
-        except Exception:
-            invalid += 1
-            continue
+        phone = row.phone
         data = _shopify_graphql(token, env, CUSTOMER_BY_PHONE_QUERY, {"query": f"phone:{phone}"})
         nodes = data.get("customers", {}).get("nodes", [])
         if not nodes:
@@ -789,18 +785,21 @@ def run_customers_import(args: argparse.Namespace) -> int:
         if len(nodes) > 1:
             ambiguous += 1
             continue
-        shopify_ids.append(nodes[0]["id"])
+        records.append({"shopify_id": nodes[0]["id"], "phone": phone})
 
     print(f"CSV rows: {len(rows)}")
-    print(f"Matched a Shopify customer: {len(shopify_ids)}")
+    print(f"Matched a Shopify customer: {len(records)}")
     print(f"No Shopify match: {unmatched}; ambiguous: {ambiguous}; unusable numbers: {invalid}")
-    if not shopify_ids:
+    if not records:
         print("Nothing to import.")
         return 1
     if not args.confirm:
         print("Dry run. Add --confirm to queue the import in the daemon.")
         return 0
-    response = daemon_request("/api/v1/customers/import", method="POST", payload={"shopify_ids": shopify_ids})
+    # Shopify returns null for protected customer data, so the phone the
+    # operator already holds is sent with the ID; the daemon links it only when
+    # the customer has no number on file.
+    response = daemon_request("/api/v1/customers/import", method="POST", payload={"records": records})
     print(json.dumps(response, indent=2))
     print("The daemon imports these in the background. Re-run 'seedhibaat ledger sync' afterwards.")
     return 0
