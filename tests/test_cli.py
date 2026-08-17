@@ -14,6 +14,7 @@ from seedhibaat.cli import (
     main,
     normalize_phone,
     read_recipient_rows,
+    build_parser,
     read_recipients,
     record_message,
     require_env,
@@ -468,3 +469,93 @@ class LedgerTraceabilityTests(unittest.TestCase):
         with patch("seedhibaat.cli.daemon_request", return_value={"recorded": True}) as request:
             record_message(record, category="MARKETING")
         self.assertEqual(request.call_args.kwargs["payload"]["category"], "UTILITY")
+
+    def test_there_is_no_flag_to_send_without_recording(self):
+        parser = build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                ["send", "--csv", "x.csv", "--template", "t", "--skip-daemon-ledger"]
+            )
+
+    def test_no_message_is_sent_when_the_daemon_will_not_account_for_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._csv(directory)
+            stdout = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch("seedhibaat.cli.require_env", return_value={}):
+                    with patch(
+                        "seedhibaat.cli.reserve_message",
+                        return_value={"reserved": False, "reason": "unknown_recipient"},
+                    ):
+                        with patch("seedhibaat.cli.send_template") as send:
+                            with patch("sys.stdout", stdout):
+                                main(
+                                    [
+                                        "send",
+                                        "--csv",
+                                        str(path),
+                                        "--template",
+                                        "order_update",
+                                        "--default-country-code",
+                                        "91",
+                                        "--send",
+                                        "--yes",
+                                    ]
+                                )
+            send.assert_not_called()
+            self.assertIn("no customer record", stdout.getvalue())
+
+    def test_nothing_is_sent_when_the_reservation_call_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._csv(directory)
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch("seedhibaat.cli.require_env", return_value={}):
+                    with patch("seedhibaat.cli.reserve_message", return_value=None):
+                        with patch("seedhibaat.cli.send_template") as send:
+                            with patch("sys.stdout", io.StringIO()):
+                                main(
+                                    [
+                                        "send",
+                                        "--csv",
+                                        str(path),
+                                        "--template",
+                                        "order_update",
+                                        "--default-country-code",
+                                        "91",
+                                        "--send",
+                                        "--yes",
+                                    ]
+                                )
+            send.assert_not_called()
+
+    def test_a_resend_is_accounted_for_separately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._csv(directory)
+            reserved = []
+
+            def reserve(base):
+                reserved.append(str(base["idempotency_key"]))
+                return {"reserved": True, "message_id": "msg_1"}
+
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch("seedhibaat.cli.require_env", return_value={}):
+                    with patch("seedhibaat.cli.reserve_message", side_effect=reserve):
+                        with patch("seedhibaat.cli.send_template", return_value="wamid.1"):
+                            with patch("seedhibaat.cli.record_message", return_value={"recorded": True}):
+                                with patch("sys.stdout", io.StringIO()):
+                                    main(
+                                        [
+                                            "send",
+                                            "--csv",
+                                            str(path),
+                                            "--template",
+                                            "order_update",
+                                            "--default-country-code",
+                                            "91",
+                                            "--send",
+                                            "--yes",
+                                            "--allow-resend",
+                                        ]
+                                    )
+            self.assertEqual(len(reserved), 1)
+            self.assertIn(":resend:", reserved[0])

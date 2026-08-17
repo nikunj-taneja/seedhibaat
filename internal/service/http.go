@@ -65,7 +65,9 @@ func (s *HTTPServer) apiMux() http.Handler {
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/activate", s.activateCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/cancel", s.cancelCampaign)
 	mux.HandleFunc("POST /api/v1/consent/import", s.importConsent)
+	mux.HandleFunc("POST /api/v1/messages/reserve", s.reserveExternalMessage)
 	mux.HandleFunc("POST /api/v1/messages/record", s.recordExternalMessage)
+	mux.HandleFunc("POST /api/v1/customers/import", s.importCustomers)
 	return mux
 }
 
@@ -866,6 +868,67 @@ func (s *HTTPServer) importConsent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"matched": matched, "unmatched": unmatched, "source": request.Source})
 }
 
+// reserveExternalMessage accounts for a CLI send before Meta is called. A
+// refusal here means the caller must not send: either the recipient has no
+// customer record, so the message could never be attributed, or this exact
+// message was already sent.
+func (s *HTTPServer) reserveExternalMessage(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Phone                string `json:"phone"`
+		Template             string `json:"template"`
+		Language             string `json:"language"`
+		Category             string `json:"category"`
+		IdempotencyKey       string `json:"idempotency_key"`
+		ParameterFingerprint string `json:"parameter_fingerprint,omitempty"`
+		AttemptedAt          string `json:"attempted_at"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	phone := normalizePhone(request.Phone)
+	if phone == "" || request.Template == "" || request.Language == "" || request.IdempotencyKey == "" {
+		http.Error(w, "phone, template, language, and idempotency_key are required", 400)
+		return
+	}
+	attempted := request.AttemptedAt
+	if attempted == "" {
+		attempted = time.Now().UTC().Format(time.RFC3339Nano)
+	} else if _, err := time.Parse(time.RFC3339, attempted); err != nil {
+		http.Error(w, "attempted_at must use RFC3339", 400)
+		return
+	}
+	category := request.Category
+	if category == "" {
+		category = "MARKETING"
+	}
+	result, err := s.Store.ReserveExternalMessage(r.Context(), store.ExternalMessage{
+		PhoneHash:            security.KeyedHash(s.Config.PIIHashKey, phone),
+		Template:             request.Template,
+		Language:             request.Language,
+		Category:             category,
+		IdempotencyKey:       request.IdempotencyKey,
+		ParameterFingerprint: request.ParameterFingerprint,
+		AttemptedAt:          attempted,
+	})
+	if err != nil {
+		s.Logger.Error("reserve external message", "error", err)
+		http.Error(w, "failed", 500)
+		return
+	}
+	switch {
+	case result.Unresolved:
+		writeJSON(w, 200, map[string]any{"reserved": false, "reason": "unknown_recipient",
+			"detail": "no customer matches this number; import the recipient from Shopify first"})
+	case result.AlreadySent:
+		writeJSON(w, 200, map[string]any{"reserved": false, "reason": "already_sent", "message_id": result.MessageID})
+	case result.Unreconciled:
+		writeJSON(w, 200, map[string]any{"reserved": false, "reason": "unreconciled", "message_id": result.MessageID,
+			"detail": "an earlier attempt never reported its outcome; reconcile it before sending again"})
+	default:
+		writeJSON(w, 200, map[string]any{"reserved": true, "message_id": result.MessageID})
+	}
+}
+
 // recordExternalMessage puts a send made outside the daemon — today only the
 // operator CLI — into outbound_messages, so its Meta status webhooks resolve,
 // it appears in reporting, and read-touch revenue attribution can reach it.
@@ -960,6 +1023,59 @@ func (s *HTTPServer) recordExternalMessage(w http.ResponseWriter, r *http.Reques
 		"upgraded":         result.Upgraded,
 		"already_recorded": !result.Created && !result.Upgraded,
 	})
+}
+
+// importCustomers brings Shopify customers into the database without touching
+// orders. A campaign can only target a customer that exists here, and a CLI
+// send can only be recorded against one, so an audience drawn from Shopify
+// must be imported before either can happen.
+//
+// It enqueues the same shopify_sync_customer job the webhook path uses, so the
+// daemon fetches each customer itself and the consent rules stay in one place.
+// It deliberately does not sync orders: order upserts start workflows and can
+// send messages.
+func (s *HTTPServer) importCustomers(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ShopifyIDs []string `json:"shopify_ids"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if len(request.ShopifyIDs) == 0 || len(request.ShopifyIDs) > 5000 {
+		http.Error(w, "shopify_ids must hold 1-5000 entries", 400)
+		return
+	}
+	queued, duplicate := 0, 0
+	for _, shopifyID := range request.ShopifyIDs {
+		shopifyID = strings.TrimSpace(shopifyID)
+		if !strings.HasPrefix(shopifyID, "gid://shopify/Customer/") {
+			http.Error(w, "every entry must be a Shopify customer GID", 400)
+			return
+		}
+		payload, err := json.Marshal(map[string]string{"customer_id": shopifyID})
+		if err != nil {
+			http.Error(w, "failed", 500)
+			return
+		}
+		enqueued, err := s.Store.EnqueueJob(r.Context(), store.Job{
+			StepID:  "customer_import",
+			Kind:    "shopify_sync_customer",
+			Payload: payload,
+		}, "customer-import:"+shopifyID, time.Now())
+		if err != nil {
+			s.Logger.Error("queue customer import", "error", err)
+			http.Error(w, "failed", 500)
+			return
+		}
+		if enqueued {
+			queued++
+		} else {
+			duplicate++
+		}
+	}
+	details, _ := json.Marshal(map[string]any{"queued": queued, "already_queued": duplicate})
+	_ = s.Store.Audit(r.Context(), "operator", "customer.import", "customer", "", string(details))
+	writeJSON(w, 202, map[string]any{"queued": queued, "already_queued": duplicate})
 }
 
 func (s *HTTPServer) authenticated(next http.Handler) http.Handler {

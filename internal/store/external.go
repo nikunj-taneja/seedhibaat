@@ -30,11 +30,81 @@ type ExternalMessageResult struct {
 	CustomerID int64
 	Created    bool
 	Upgraded   bool
+	// AlreadySent reports a reservation refused because this exact message was
+	// already sent. The caller must not spend money on it again.
+	AlreadySent bool
+	// Unreconciled reports a reservation refused because an earlier attempt
+	// never reported its outcome. Meta may or may not have accepted it, so it
+	// must be reconciled, never re-sent.
+	Unreconciled bool
 	// Unresolved reports a recipient with no customer row. The recorder must
 	// never invent one: customers.phone_hash is UNIQUE while the Shopify
 	// upsert infers ON CONFLICT(shopify_id) only, so a phone-only row makes
 	// SQLite abort that customer's next sync and lose their orders.
 	Unresolved bool
+}
+
+
+// ReserveExternalMessage accounts for a message before it is sent. Nothing may
+// spend money without a record of who is being messaged, with which template,
+// and when, so the caller must reserve first and only then call Meta. A
+// recipient with no customer row is refused here, before any spend.
+//
+// The reserved row is state 'queued' and carries attempted_at. If the caller
+// dies before reporting the outcome, the row stays visible as an unreconciled
+// send instead of vanishing.
+func (s *Store) ReserveExternalMessage(ctx context.Context, message ExternalMessage) (ExternalMessageResult, error) {
+	var result ExternalMessageResult
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer tx.Rollback()
+
+	var existingID, existingState string
+	err = tx.QueryRowContext(ctx, `SELECT id,state FROM outbound_messages WHERE idempotency_key=?`, message.IdempotencyKey).Scan(&existingID, &existingState)
+	if err == nil {
+		result.MessageID = existingID
+		result.AlreadySent = existingState != "queued"
+		result.Unreconciled = existingState == "queued"
+		return result, tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+
+	var customerID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM customers WHERE phone_hash=?`, message.PhoneHash).Scan(&customerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		result.Unresolved = true
+		return result, tx.Commit()
+	} else if err != nil {
+		return result, err
+	}
+	result.CustomerID = customerID
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	messageID := NewID("msg")
+	insert, err := tx.ExecContext(ctx, `INSERT INTO outbound_messages
+		(id,customer_id,template_name,template_language,category,parameter_fingerprint,idempotency_key,state,source,attempted_at,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?, 'queued','cli',?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`,
+		messageID, customerID, message.Template, message.Language, message.Category,
+		nullableText(message.ParameterFingerprint), message.IdempotencyKey, message.AttemptedAt, message.AttemptedAt, now)
+	if err != nil {
+		return result, err
+	}
+	if written, err := insert.RowsAffected(); err != nil {
+		return result, err
+	} else if written == 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM outbound_messages WHERE idempotency_key=?`, message.IdempotencyKey).Scan(&result.MessageID); err != nil {
+			return result, err
+		}
+		result.AlreadySent = true
+		return result, tx.Commit()
+	}
+	result.MessageID = messageID
+	result.Created = true
+	return result, tx.Commit()
 }
 
 // RecordExternalMessage is idempotent on IdempotencyKey so the CLI can replay
@@ -54,6 +124,20 @@ func (s *Store) RecordExternalMessage(ctx context.Context, message ExternalMessa
 	err = tx.QueryRowContext(ctx, `SELECT id,state,meta_message_id FROM outbound_messages WHERE idempotency_key=?`, message.IdempotencyKey).Scan(&existingID, &existingState, &existingMetaID)
 	if err == nil {
 		result.MessageID = existingID
+		if existingState == "queued" {
+			state, accepted, failed := "accepted", any(message.AttemptedAt), any(nil)
+			if message.Status == "failed" {
+				state, accepted, failed = "failed", nil, message.AttemptedAt
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE outbound_messages SET state=?,meta_message_id=?,accepted_at=?,failed_at=?,failure_code=?,failure_reason=?,updated_at=? WHERE id=?`,
+				state, nullableText(message.MetaMessageID), accepted, failed,
+				nullableText(message.FailureCode), nullableText(message.FailureReason),
+				time.Now().UTC().Format(time.RFC3339Nano), existingID); err != nil {
+				return result, err
+			}
+			result.Upgraded = true
+			return result, tx.Commit()
+		}
 		if existingState == "failed" && !existingMetaID.Valid && message.Status == "accepted" {
 			if _, err := tx.ExecContext(ctx, `UPDATE outbound_messages SET state='accepted',meta_message_id=?,accepted_at=?,failed_at=NULL,failure_code=NULL,failure_reason=NULL,updated_at=? WHERE id=?`,
 				message.MetaMessageID, message.AttemptedAt, time.Now().UTC().Format(time.RFC3339Nano), existingID); err != nil {

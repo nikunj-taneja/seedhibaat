@@ -754,12 +754,75 @@ def _add_segment_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--allow-unknown-consent", action="store_true", help="preview only; activation still applies suppression rules")
 
 
+
+CUSTOMER_BY_PHONE_QUERY = """query SeedhiBaatCustomerByPhone($query: String!) {
+  customers(first: 2, query: $query) {
+    nodes { id defaultPhoneNumber { phoneNumber } }
+  }
+}"""
+
+
+def run_customers_import(args: argparse.Namespace) -> int:
+    """Import the Shopify customers behind a recipient CSV.
+
+    A campaign can only target a customer the daemon already knows, and a CLI
+    send can only be recorded against one. Reports counts only, never numbers.
+    """
+    from .cli import normalize_phone, read_recipient_rows
+
+    rows = read_recipient_rows(args.csv, args.phone_column)
+    token, env = _shopify_token()
+    default_country = args.default_country_code or os.environ.get("SEEDHIBAAT_DEFAULT_COUNTRY_CODE", "")
+    shopify_ids: list[str] = []
+    unmatched = ambiguous = invalid = 0
+    for row in rows:
+        try:
+            phone = normalize_phone(row[args.phone_column], default_country)
+        except Exception:
+            invalid += 1
+            continue
+        data = _shopify_graphql(token, env, CUSTOMER_BY_PHONE_QUERY, {"query": f"phone:{phone}"})
+        nodes = data.get("customers", {}).get("nodes", [])
+        if not nodes:
+            unmatched += 1
+            continue
+        if len(nodes) > 1:
+            ambiguous += 1
+            continue
+        shopify_ids.append(nodes[0]["id"])
+
+    print(f"CSV rows: {len(rows)}")
+    print(f"Matched a Shopify customer: {len(shopify_ids)}")
+    print(f"No Shopify match: {unmatched}; ambiguous: {ambiguous}; unusable numbers: {invalid}")
+    if not shopify_ids:
+        print("Nothing to import.")
+        return 1
+    if not args.confirm:
+        print("Dry run. Add --confirm to queue the import in the daemon.")
+        return 0
+    response = daemon_request("/api/v1/customers/import", method="POST", payload={"shopify_ids": shopify_ids})
+    print(json.dumps(response, indent=2))
+    print("The daemon imports these in the background. Re-run 'seedhibaat ledger sync' afterwards.")
+    return 0
+
+
 def register_operator_commands(subparsers: argparse._SubParsersAction) -> None:
     secrets_parser = subparsers.add_parser("secrets", help="generate local non-provider secrets safely")
     secrets_sub = secrets_parser.add_subparsers(dest="secrets_command", required=True)
     secrets_init = secrets_sub.add_parser("init")
     secrets_init.add_argument("--env-file", type=Path, default=Path(".env"))
     secrets_init.set_defaults(func=run_secrets_init)
+
+    customers = subparsers.add_parser("customers", help="manage customer records in the daemon")
+    customers_sub = customers.add_subparsers(dest="customers_command", required=True)
+    customers_import = customers_sub.add_parser(
+        "import", help="import the Shopify customers behind a recipient CSV so sends can be recorded and targeted"
+    )
+    customers_import.add_argument("--csv", type=Path, required=True)
+    customers_import.add_argument("--phone-column", default="phone")
+    customers_import.add_argument("--default-country-code")
+    customers_import.add_argument("--confirm", action="store_true", help="queue the import; without it this is a dry run")
+    customers_import.set_defaults(func=run_customers_import)
 
     daemon = subparsers.add_parser("daemon", help="inspect the local SeedhiBaat service")
     daemon_sub = daemon.add_subparsers(dest="daemon_command", required=True)

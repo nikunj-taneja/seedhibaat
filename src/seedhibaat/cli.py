@@ -168,6 +168,28 @@ def record_message(record: dict[str, object], *, category: str) -> dict[str, obj
         return None
 
 
+def reserve_message(base: dict[str, object]) -> dict[str, object] | None:
+    """Ask the daemon to account for a message before it is sent.
+
+    Returns the daemon's answer, or None when the daemon could not be reached.
+    A caller that does not get `reserved: true` must not send.
+    """
+    payload = {
+        "phone": str(base["phone"]),
+        "template": str(base["template"]),
+        "language": str(base["language"]),
+        "category": str(base.get("category") or "MARKETING"),
+        "idempotency_key": str(base["idempotency_key"]),
+        "parameter_fingerprint": str(base.get("parameter_fingerprint", "")),
+        "attempted_at": str(base["timestamp"]),
+    }
+    try:
+        response = daemon_request("/api/v1/messages/reserve", method="POST", payload=payload)
+        return response if isinstance(response, dict) else {}
+    except (OperatorError, urllib.error.URLError, json.JSONDecodeError, OSError):
+        return None
+
+
 def daemon_reachable() -> bool:
     base_url = os.environ.get("SEEDHIBAAT_OPERATOR_URL", "http://127.0.0.1:8088")
     try:
@@ -431,12 +453,12 @@ def run_send(args: argparse.Namespace) -> int:
     # Every message must be traceable, so refuse to send when the daemon that
     # owns the ledger cannot be reached. Overriding this is deliberate and
     # leaves the run needing `ledger sync`.
-    record_to_daemon = not args.skip_daemon_ledger
-    if record_to_daemon and not daemon_reachable():
+    record_to_daemon = True
+    if not daemon_reachable():
         raise SeedhiBaatError(
             "daemon is unreachable, so these sends could not be recorded or attributed. "
-            "Start the daemon, point SEEDHIBAAT_OPERATOR_URL at it, or pass "
-            "--skip-daemon-ledger to send untracked and reconcile later with 'ledger sync'."
+            "Start the daemon or point SEEDHIBAAT_OPERATOR_URL at it. There is no "
+            "untracked send path: money spent must leave a record."
         )
     unrecorded = 0
     unknown_recipients = 0
@@ -470,11 +492,35 @@ def run_send(args: argparse.Namespace) -> int:
         }
         if components:
             base["parameter_fingerprint"] = parameter_fingerprint(components)
-        if key in sent_keys and not args.allow_resend:
+        if args.allow_resend:
+            # A deliberate resend is its own message and must be accounted for
+            # separately, not merged into the original send's record.
+            key = key + ":resend:" + str(base["timestamp"])
+            base["idempotency_key"] = key
+        elif key in sent_keys:
             record = {**base, "status": "skipped_duplicate"}
             append_jsonl(run_path, record)
             skipped += 1
             continue
+
+        # Account for the message before spending money on it. The daemon
+        # refuses a recipient it cannot record, and a refusal means no send.
+        reservation = reserve_message(base)
+        if reservation is None:
+            record = {**base, "status": "not_sent", "error": "daemon did not reserve the message"}
+            append_jsonl(run_path, record)
+            unrecorded += 1
+            continue
+        if not reservation.get("reserved"):
+            reason = str(reservation.get("reason", "refused"))
+            record = {**base, "status": "not_sent", "error": reason}
+            append_jsonl(run_path, record)
+            if reason == "unknown_recipient":
+                unknown_recipients += 1
+            else:
+                skipped += 1
+            continue
+
         try:
             message_id = send_template(
                 phone=recipient.phone,
@@ -491,19 +537,14 @@ def run_send(args: argparse.Namespace) -> int:
         except (SeedhiBaatError, OSError) as exc:
             # OSError covers socket timeouts, which send_template does not wrap;
             # letting one escape would abort the run after Meta may already have
-            # accepted the message, leaving no record anywhere.
+            # accepted the message.
             record = {**base, "status": "failed", "error": str(exc)}
             append_jsonl(ledger_path, record)
             failed += 1
-        # The daemon owns reporting and revenue attribution, so an unrecorded
-        # send is an invisible send. The ledger line is written first, which
-        # lets `ledger sync` replay anything the daemon missed.
-        if record_to_daemon:
-            response = record_message(record, category=args.category)
-            if response is None:
-                unrecorded += 1
-            elif response.get("reason") == "unknown_recipient":
-                unknown_recipients += 1
+        # Settle the reservation. If this fails the reserved row stays in the
+        # daemon as an unreconciled send, and `ledger sync` closes it.
+        if record_message(record, category=args.category) is None:
+            unrecorded += 1
         append_jsonl(run_path, record)
 
     print(f"Accepted: {accepted}; failed: {failed}; skipped duplicates: {skipped}")
@@ -517,12 +558,10 @@ def run_send(args: argparse.Namespace) -> int:
             )
         if unknown_recipients:
             print(
-                f"WARNING: {unknown_recipients} recipient(s) have no customer record, so their "
-                "messages were not recorded and cannot attribute revenue. Sync them from Shopify "
-                "or import their consent, then run: seedhibaat ledger sync"
+                f"{unknown_recipients} recipient(s) have no customer record. Nothing was sent to "
+                "them, because the send could not be accounted for. Import them first with: "
+                "seedhibaat customers import --csv <file> --confirm"
             )
-    else:
-        print("WARNING: --skip-daemon-ledger was used. These messages are untracked; run 'seedhibaat ledger sync' to record them.")
     print(f"Run log: {run_path}")
     return 1 if failed else 0
 
@@ -543,11 +582,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--category",
         default="MARKETING",
         help="template category recorded in the daemon ledger",
-    )
-    send.add_argument(
-        "--skip-daemon-ledger",
-        action="store_true",
-        help="send without recording to the daemon; the run stays invisible to reporting and attribution until 'ledger sync'",
     )
     send.add_argument(
         "--header-image-url",

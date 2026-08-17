@@ -47,6 +47,11 @@ optional read-only aggregate metrics dashboard.
   user.
 - Preserve `state/sends.ndjson` and the SQLite database. Both protect against
   duplicate sends.
+- No live path may spend money without accounting for it first. Every message
+  must be reserved in the daemon — recipient, template, language, and time —
+  before Meta is called. If the daemon cannot account for a message, do not
+  send it. Never add a flag, fallback, or override that sends without a
+  record.
 - Meta API acceptance is only `accepted`; never describe it as sent,
   delivered, or read without the corresponding verified webhook.
 - Marketing use cases must be submitted as `MARKETING`. Do not attempt to

@@ -671,3 +671,121 @@ func TestRatesWithoutADenominatorRenderAsUnmeasured(t *testing.T) {
 		t.Fatalf("ratio with a denominator = %q", got)
 	}
 }
+
+func TestCustomerImportQueuesSyncJobsWithoutTouchingOrders(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	body := `{"shopify_ids":["gid://shopify/Customer/1","gid://shopify/Customer/2","gid://shopify/Customer/1"]}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/customers/import", bytes.NewReader([]byte(body)))
+	request.Header.Set("Authorization", "Bearer api")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != 202 {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+	var result map[string]any
+	_ = json.Unmarshal(response.Body.Bytes(), &result)
+	if result["queued"] != float64(2) || result["already_queued"] != float64(1) {
+		t.Fatalf("result=%v", result)
+	}
+	var kinds string
+	if err := db.DB.QueryRow(`SELECT group_concat(DISTINCT kind) FROM scheduled_jobs`).Scan(&kinds); err != nil {
+		t.Fatal(err)
+	}
+	if kinds != "shopify_sync_customer" {
+		t.Fatalf("import queued more than customer syncs: %s", kinds)
+	}
+}
+
+func TestCustomerImportRejectsAnythingButACustomerGID(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	for _, body := range []string{
+		`{"shopify_ids":[]}`,
+		`{"shopify_ids":["gid://shopify/Order/1"]}`,
+		`{"shopify_ids":["919876543210"]}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/customers/import", bytes.NewReader([]byte(body)))
+		request.Header.Set("Authorization", "Bearer api")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != 400 {
+			t.Fatalf("body=%s code=%d, want 400", body, response.Code)
+		}
+	}
+}
+
+func reserveExternal(t *testing.T, server *HTTPServer, body string) map[string]any {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/messages/reserve", bytes.NewReader([]byte(body)))
+	request.Header.Set("Authorization", "Bearer api")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != 200 {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(response.Body.Bytes(), &parsed)
+	return parsed
+}
+
+func TestReservationRefusesARecipientItCannotAccountFor(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	answer := reserveExternal(t, server, `{"phone":"919876500020","template":"t","language":"en_US","idempotency_key":"r1"}`)
+	if answer["reserved"] != false || answer["reason"] != "unknown_recipient" {
+		t.Fatalf("answer=%v", answer)
+	}
+	var messages int
+	_ = db.DB.QueryRow(`SELECT count(*) FROM outbound_messages`).Scan(&messages)
+	if messages != 0 {
+		t.Fatalf("a refused reservation still wrote a row: %d", messages)
+	}
+}
+
+func TestReservationRecordsTheMessageBeforeItIsSent(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	phone := "919876500021"
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,phone_hash,whatsapp_consent,created_at,updated_at) VALUES(21,'gid://shopify/Customer/21',x'01',?,'opted_in',?,?)`,
+		security.KeyedHash(server.Config.PIIHashKey, phone), now, now)
+
+	answer := reserveExternal(t, server, `{"phone":"`+phone+`","template":"stay_upgrade","language":"en_US","idempotency_key":"r2","attempted_at":"`+now+`"}`)
+	if answer["reserved"] != true {
+		t.Fatalf("answer=%v", answer)
+	}
+	var state, template string
+	var attempted string
+	if err := db.DB.QueryRow(`SELECT state,template_name,attempted_at FROM outbound_messages WHERE idempotency_key='r2'`).Scan(&state, &template, &attempted); err != nil {
+		t.Fatal(err)
+	}
+	if state != "queued" || template != "stay_upgrade" || attempted != now {
+		t.Fatalf("state=%s template=%s attempted=%s", state, template, attempted)
+	}
+
+	// A second reservation must refuse. The first attempt has not reported an
+	// outcome, so Meta may already have accepted it; re-sending could spend
+	// money twice and deliver a duplicate.
+	repeat := reserveExternal(t, server, `{"phone":"`+phone+`","template":"stay_upgrade","language":"en_US","idempotency_key":"r2"}`)
+	if repeat["reserved"] != false || repeat["reason"] != "unreconciled" {
+		t.Fatalf("repeat=%v", repeat)
+	}
+
+	// Reporting the outcome settles the reserved row rather than adding one.
+	recordExternal(t, server, `{"phone":"`+phone+`","template":"stay_upgrade","language":"en_US",
+		"idempotency_key":"r2","meta_message_id":"wamid.R2","status":"accepted","attempted_at":"`+now+`"}`)
+	var settled, metaID string
+	var count int
+	_ = db.DB.QueryRow(`SELECT count(*) FROM outbound_messages`).Scan(&count)
+	if err := db.DB.QueryRow(`SELECT state,meta_message_id FROM outbound_messages WHERE idempotency_key='r2'`).Scan(&settled, &metaID); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || settled != "accepted" || metaID != "wamid.R2" {
+		t.Fatalf("count=%d state=%s meta=%s", count, settled, metaID)
+	}
+}
