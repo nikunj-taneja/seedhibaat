@@ -283,6 +283,51 @@ steps:
 	}
 }
 
+func TestDashboardScriptIsServedAsAnAssetAndAllowedByPolicy(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.MetricsEnabled = true
+	server.Config.MetricsUsername = "operator"
+	server.Config.MetricsPassword = "a-very-long-dashboard-password-value"
+	server.Config.ReportTimezone = "UTC"
+	server.Config.AttributionWindow = 30 * 24 * time.Hour
+
+	request := httptest.NewRequest(http.MethodGet, "/metrics?range=7d", nil)
+	request.SetBasicAuth("operator", "a-very-long-dashboard-password-value")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dashboard code=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `src="/metrics/assets/dashboard.js"`) {
+		t.Fatalf("dashboard does not reference the script asset")
+	}
+	if policy := response.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "script-src 'self'") {
+		t.Fatalf("content security policy blocks the script asset: %q", policy)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/metrics/assets/dashboard.js", nil)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("script asset served without authentication: code=%d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/metrics/assets/dashboard.js", nil)
+	request.SetBasicAuth("operator", "a-very-long-dashboard-password-value")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("script asset code=%d", response.Code)
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/javascript; charset=utf-8" {
+		t.Fatalf("script asset content type=%q", contentType)
+	}
+	if !strings.Contains(response.Body.String(), "chart-tip") {
+		t.Fatalf("script asset does not carry the tooltip code")
+	}
+}
+
 func TestDailyChartBarsAreCenteredAndDoNotOverlap(t *testing.T) {
 	bars, ticks := makeChart([]store.DailyMetric{
 		{Date: "1 Jan", Delivered: 3, UniqueClicks: 1},

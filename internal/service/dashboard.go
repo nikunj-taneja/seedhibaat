@@ -21,6 +21,9 @@ var dashboardHTML string
 //go:embed dashboard.css
 var dashboardCSS []byte
 
+//go:embed dashboard.js
+var dashboardJS []byte
+
 var dashboardTemplate = template.Must(template.New("dashboard").Parse(dashboardHTML))
 
 type dashboardCard struct {
@@ -135,6 +138,12 @@ func (s *HTTPServer) dashboardStyles(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-store")
 	_, _ = w.Write(dashboardCSS)
+}
+
+func (s *HTTPServer) dashboardScript(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	_, _ = w.Write(dashboardJS)
 }
 
 func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
