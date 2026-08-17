@@ -326,6 +326,41 @@ func TestDashboardScriptIsServedAsAnAssetAndAllowedByPolicy(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "chart-tip") {
 		t.Fatalf("script asset does not carry the tooltip code")
 	}
+	// The native <title> stays in the markup for the no-script case, but the
+	// script must drop it or the browser draws a second tooltip beside ours.
+	if !strings.Contains(response.Body.String(), "removeChild") {
+		t.Fatalf("script does not remove the native title fallback")
+	}
+}
+
+func TestChartBarsCarryANoScriptFallbackAndAnAccessibleName(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.MetricsEnabled = true
+	server.Config.MetricsUsername = "operator"
+	server.Config.MetricsPassword = "a-very-long-dashboard-password-value"
+	server.Config.ReportTimezone = "UTC"
+	server.Config.AttributionWindow = 30 * 24 * time.Hour
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,created_at,updated_at) VALUES(1,'customer',x'01',?,?)`, now, now)
+	_, _ = db.DB.Exec(`INSERT INTO outbound_messages(id,customer_id,template_name,template_language,category,idempotency_key,state,attempted_at,accepted_at,sent_at,delivered_at,created_at,updated_at) VALUES('message',1,'welcome','en_US','MARKETING','key','delivered',?,?,?,?,?,?)`, now, now, now, now, now, now)
+
+	request := httptest.NewRequest(http.MethodGet, "/metrics?range=7d", nil)
+	request.SetBasicAuth("operator", "a-very-long-dashboard-password-value")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	body := response.Body.String()
+	if !strings.Contains(body, `class="chart-day"`) {
+		t.Fatalf("the chart drew no bars, so the fallback cannot be checked")
+	}
+	// Removing either half would leave a bar with no name when the script is
+	// blocked, or no name at all once the script removes the title.
+	if !strings.Contains(body, "<title>") {
+		t.Fatalf("bars lost the no-script title fallback")
+	}
+	if !strings.Contains(body, `class="chart-day" tabindex="0" aria-label=`) {
+		t.Fatalf("bars lost the accessible name the script relies on")
+	}
 }
 
 func TestDailyChartBarsAreCenteredAndDoNotOverlap(t *testing.T) {

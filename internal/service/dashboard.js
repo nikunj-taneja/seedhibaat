@@ -25,6 +25,11 @@
   function hide() { tip.setAttribute('hidden', ''); }
 
   Array.prototype.forEach.call(document.querySelectorAll('.chart-day'), function (group) {
+    // The native <title> is the no-script fallback. Once this runs it would
+    // draw a second tooltip beside ours, so drop it. The group's aria-label
+    // already names the bar, so nothing is lost to a screen reader.
+    var native = group.querySelector('title');
+    if (native) { native.parentNode.removeChild(native); }
     group.addEventListener('mouseenter', function () { show(group); });
     group.addEventListener('focus', function () { show(group); });
     group.addEventListener('mouseleave', hide);
