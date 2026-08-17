@@ -398,3 +398,73 @@ class LedgerTraceabilityTests(unittest.TestCase):
                     code = main(["ledger", "sync", "--ledger", str(ledger)])
             self.assertEqual(code, 2)
             self.assertIn("unreachable", stderr.getvalue())
+
+    def test_unknown_recipient_is_reported_not_counted_as_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "sends.ndjson"
+            ledger.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-08-16T09:27:24Z",
+                        "phone": "+919876543210",
+                        "template": "stay_upgrade",
+                        "language": "en_US",
+                        "idempotency_key": "key-one",
+                        "status": "accepted",
+                        "message_id": "wamid.1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch(
+                    "seedhibaat.cli.daemon_request",
+                    return_value={"recorded": False, "reason": "unknown_recipient"},
+                ):
+                    with patch("sys.stdout", stdout):
+                        self.assertEqual(main(["ledger", "sync", "--ledger", str(ledger)]), 0)
+            self.assertIn("no customer row", stdout.getvalue())
+            self.assertIn("Newly recorded: 0", stdout.getvalue())
+
+    def test_ledger_sync_skips_a_truncated_line_instead_of_aborting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "sends.ndjson"
+            ledger.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-08-16T09:27:24Z",
+                        "phone": "+919876543210",
+                        "template": "stay_upgrade",
+                        "language": "en_US",
+                        "idempotency_key": "key-one",
+                        "status": "accepted",
+                        "message_id": "wamid.1",
+                    }
+                )
+                + "\n" + '{"timestamp":"2026-08-16T09:2',
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch("seedhibaat.cli.daemon_request", return_value={"recorded": True}):
+                    with patch("sys.stdout", stdout):
+                        self.assertEqual(main(["ledger", "sync", "--ledger", str(ledger)]), 0)
+            self.assertIn("Newly recorded: 1", stdout.getvalue())
+            self.assertIn("could not be parsed", stdout.getvalue())
+
+    def test_replayed_record_keeps_its_original_category(self):
+        record = {
+            "timestamp": "2026-08-16T09:27:24Z",
+            "phone": "+919876543210",
+            "template": "stay_utility",
+            "language": "en_US",
+            "category": "UTILITY",
+            "idempotency_key": "key",
+            "status": "accepted",
+            "message_id": "wamid.1",
+        }
+        with patch("seedhibaat.cli.daemon_request", return_value={"recorded": True}) as request:
+            record_message(record, category="MARKETING")
+        self.assertEqual(request.call_args.kwargs["payload"]["category"], "UTILITY")

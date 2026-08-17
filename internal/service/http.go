@@ -7,10 +7,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -913,7 +915,6 @@ func (s *HTTPServer) recordExternalMessage(w http.ResponseWriter, r *http.Reques
 
 	result, err := s.Store.RecordExternalMessage(r.Context(), store.ExternalMessage{
 		PhoneHash:            security.KeyedHash(s.Config.PIIHashKey, phone),
-		PhoneCiphertext:      nil,
 		Template:             request.Template,
 		Language:             request.Language,
 		Category:             category,
@@ -922,25 +923,42 @@ func (s *HTTPServer) recordExternalMessage(w http.ResponseWriter, r *http.Reques
 		MetaMessageID:        request.MetaMessageID,
 		Status:               request.Status,
 		FailureCode:          request.FailureCode,
-		FailureReason:        truncate(request.FailureReason, 500),
-		AttemptedAt:          attempted,
-	}, func() ([]byte, error) {
-		return security.Encrypt(s.Config.PIIHashKey, []byte(phone))
+		// Meta puts the recipient's number in some error bodies, and this
+		// column is written in plaintext and copied into backups.
+		FailureReason: truncate(safeLogError(errors.New(request.FailureReason)), 500),
+		AttemptedAt:   attempted,
 	})
 	if err != nil {
 		s.Logger.Error("record external message", "error", err)
 		http.Error(w, "failed", 500)
 		return
 	}
-	if result.Created {
-		details, _ := json.Marshal(map[string]any{"source": "cli", "template": request.Template, "status": request.Status, "customer_created": result.CustomerCreated})
+	if result.Unresolved {
+		// Inventing a customer here would create a phone-only row that breaks
+		// the Shopify upsert for that person; the operator has to reconcile.
+		writeJSON(w, 200, map[string]any{
+			"recorded": false,
+			"reason":   "unknown_recipient",
+			"detail":   "no customer matches this number; sync the recipient from Shopify or import consent, then replay with 'ledger sync'",
+		})
+		return
+	}
+	if result.Created || result.Upgraded {
+		details, _ := json.Marshal(map[string]any{"source": "cli", "template": request.Template, "status": request.Status, "upgraded": result.Upgraded})
 		_ = s.Store.Audit(r.Context(), "operator", "message.record_external", "message", result.MessageID, string(details))
+	}
+	if request.Status == "failed" && request.FailureCode != "" && result.CustomerID != 0 {
+		if code, err := strconv.Atoi(request.FailureCode); err == nil {
+			if _, err := s.Store.SuppressForMetaFailure(r.Context(), result.CustomerID, code); err != nil {
+				s.Logger.Error("suppress after external failure", "error", err)
+			}
+		}
 	}
 	writeJSON(w, 200, map[string]any{
 		"message_id":       result.MessageID,
 		"recorded":         result.Created,
-		"already_recorded": !result.Created,
-		"customer_created": result.CustomerCreated,
+		"upgraded":         result.Upgraded,
+		"already_recorded": !result.Created && !result.Upgraded,
 	})
 }
 

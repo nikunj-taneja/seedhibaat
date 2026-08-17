@@ -389,32 +389,153 @@ func TestMigrationVersionsAreUnique(t *testing.T) {
 	}
 }
 
+func seedCustomer(t *testing.T, s *Store, phoneHash string) int64 {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.DB.Exec(`INSERT INTO customers(shopify_id,phone_ciphertext,phone_hash,whatsapp_consent,created_at,updated_at) VALUES(?,x'01',?,'opted_in',?,?)`, "gid://shopify/Customer/"+phoneHash, phoneHash, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result.LastInsertId()
+	return id
+}
+
 func TestExternalMessagesAreRecordedOncePerIdempotencyKey(t *testing.T) {
 	s, err := Open(context.Background(), ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	seedCustomer(t, s, "hash-value")
 	message := ExternalMessage{
 		PhoneHash: "hash-value", Template: "stay_upgrade", Language: "en_US", Category: "MARKETING",
 		IdempotencyKey: "key", MetaMessageID: "wamid.ONE", Status: "accepted",
 		AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	encrypt := func() ([]byte, error) { return []byte{0x01}, nil }
-	first, err := s.RecordExternalMessage(context.Background(), message, encrypt)
-	if err != nil || !first.Created || !first.CustomerCreated {
+	first, err := s.RecordExternalMessage(context.Background(), message)
+	if err != nil || !first.Created {
 		t.Fatalf("first=%+v err=%v", first, err)
 	}
-	second, err := s.RecordExternalMessage(context.Background(), message, encrypt)
+	second, err := s.RecordExternalMessage(context.Background(), message)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if second.Created || second.MessageID != first.MessageID {
 		t.Fatalf("replay created a duplicate: %+v", second)
 	}
-	var customers int
-	if err := s.DB.QueryRow(`SELECT count(*) FROM customers`).Scan(&customers); err != nil || customers != 1 {
-		t.Fatalf("customers=%d err=%v", customers, err)
+}
+
+// A phone-only customer row aborts the Shopify upsert, which infers
+// ON CONFLICT(shopify_id) only, so that customer's orders stop syncing.
+func TestUnknownRecipientIsReportedRatherThanInvented(t *testing.T) {
+	s, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	result, err := s.RecordExternalMessage(context.Background(), ExternalMessage{
+		PhoneHash: "nobody", Template: "t", Language: "en_US", Category: "MARKETING",
+		IdempotencyKey: "key", MetaMessageID: "wamid.X", Status: "accepted",
+		AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Unresolved || result.Created {
+		t.Fatalf("result=%+v", result)
+	}
+	var customers, messages int
+	_ = s.DB.QueryRow(`SELECT count(*) FROM customers`).Scan(&customers)
+	_ = s.DB.QueryRow(`SELECT count(*) FROM outbound_messages`).Scan(&messages)
+	if customers != 0 || messages != 0 {
+		t.Fatalf("recorder invented rows: customers=%d messages=%d", customers, messages)
+	}
+}
+
+func TestRepairedSendUpgradesItsFailedRecord(t *testing.T) {
+	s, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedCustomer(t, s, "hash-upgrade")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	base := ExternalMessage{
+		PhoneHash: "hash-upgrade", Template: "t", Language: "en_US", Category: "MARKETING",
+		IdempotencyKey: "same-key", AttemptedAt: now,
+	}
+	failure := base
+	failure.Status = "failed"
+	failure.FailureCode = "131049"
+	if _, err := s.RecordExternalMessage(context.Background(), failure); err != nil {
+		t.Fatal(err)
+	}
+	success := base
+	success.Status = "accepted"
+	success.MetaMessageID = "wamid.REPAIRED"
+	result, err := s.RecordExternalMessage(context.Background(), success)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Upgraded {
+		t.Fatalf("repaired send was discarded: %+v", result)
+	}
+	var state string
+	var metaID sql.NullString
+	if err := s.DB.QueryRow(`SELECT state,meta_message_id FROM outbound_messages WHERE idempotency_key='same-key'`).Scan(&state, &metaID); err != nil {
+		t.Fatal(err)
+	}
+	if state != "accepted" || metaID.String != "wamid.REPAIRED" {
+		t.Fatalf("state=%s meta=%v; the repaired attempt's webhooks would be dropped", state, metaID)
+	}
+}
+
+func TestReplayedRecordKeepsTheOriginalSendDay(t *testing.T) {
+	s, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedCustomer(t, s, "hash-day")
+	sentAt := "2026-08-16T09:27:24.000000Z"
+	if _, err := s.RecordExternalMessage(context.Background(), ExternalMessage{
+		PhoneHash: "hash-day", Template: "t", Language: "en_US", Category: "MARKETING",
+		IdempotencyKey: "day-key", MetaMessageID: "wamid.DAY", Status: "accepted", AttemptedAt: sentAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var createdAt string
+	if err := s.DB.QueryRow(`SELECT created_at FROM outbound_messages WHERE idempotency_key='day-key'`).Scan(&createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if createdAt != sentAt {
+		t.Fatalf("created_at=%s, want the send time %s; reporting windows key on this", createdAt, sentAt)
+	}
+}
+
+func TestMetaOptOutSuppressesFromEverySendPath(t *testing.T) {
+	s, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	customerID := seedCustomer(t, s, "hash-optout")
+	changed, err := s.SuppressForMetaFailure(context.Background(), customerID, 131050)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	var consent, reason string
+	var suppressed sql.NullString
+	if err := s.DB.QueryRow(`SELECT whatsapp_consent,suppression_reason,suppressed_at FROM customers WHERE id=?`, customerID).Scan(&consent, &reason, &suppressed); err != nil {
+		t.Fatal(err)
+	}
+	if consent != "opted_out" || !suppressed.Valid {
+		t.Fatalf("consent=%s suppressed=%v", consent, suppressed)
+	}
+	var audits int
+	_ = s.DB.QueryRow(`SELECT count(*) FROM audit_log WHERE action='customer.opt_out'`).Scan(&audits)
+	if audits != 1 {
+		t.Fatalf("opt-out audits=%d", audits)
 	}
 }
 
@@ -424,11 +545,12 @@ func TestFailedExternalMessageIsRecordedWithItsCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	seedCustomer(t, s, "hash-failed")
 	_, err = s.RecordExternalMessage(context.Background(), ExternalMessage{
 		PhoneHash: "hash-failed", Template: "stay_upgrade", Language: "en_US", Category: "MARKETING",
 		IdempotencyKey: "key-failed", Status: "failed", FailureCode: "131049",
 		FailureReason: "healthy ecosystem", AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano),
-	}, func() ([]byte, error) { return []byte{0x01}, nil })
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

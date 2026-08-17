@@ -729,7 +729,20 @@ func nullableString(value string) any {
 	}
 	return value
 }
-func normalizePhone(value string) string { return strings.TrimPrefix(strings.TrimSpace(value), "+") }
+// normalizePhone is the single canonical form for a phone number across every
+// producer: Shopify sync, inbound replies, consent import, and the external
+// recorder. They must agree, or the same person hashes to two identities and a
+// STOP recorded against one keeps receiving campaigns aimed at the other.
+func normalizePhone(value string) string {
+	var digits strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	normalized := digits.String()
+	return strings.TrimPrefix(normalized, "00")
+}
 func isOptOut(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "stop", "unsubscribe", "opt out", "optout", "cancel", "band":

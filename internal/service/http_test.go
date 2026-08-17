@@ -497,7 +497,7 @@ func TestExternalMessageRecordingIsTraceableAndIdempotent(t *testing.T) {
 	}
 	var first map[string]any
 	_ = json.Unmarshal(response.Body.Bytes(), &first)
-	if first["recorded"] != true || first["customer_created"] != false {
+	if first["recorded"] != true {
 		t.Fatalf("unexpected first response: %v", first)
 	}
 
@@ -554,7 +554,7 @@ func TestExternalMessageRecordingResolvesWebhooksAndAttribution(t *testing.T) {
 	}
 }
 
-func TestExternalMessageRecordingCreatesUnknownRecipient(t *testing.T) {
+func TestExternalMessageRecordingRefusesToInventARecipient(t *testing.T) {
 	server, db := testHTTPServer(t)
 	defer db.Close()
 	server.Config.PIIHashKey = "hash-key-value-for-tests"
@@ -563,17 +563,75 @@ func TestExternalMessageRecordingCreatesUnknownRecipient(t *testing.T) {
 	if response.Code != 200 {
 		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
 	}
-	var created map[string]any
-	_ = json.Unmarshal(response.Body.Bytes(), &created)
-	if created["customer_created"] != true {
-		t.Fatalf("unknown recipient was not created: %v", created)
+	var body map[string]any
+	_ = json.Unmarshal(response.Body.Bytes(), &body)
+	if body["recorded"] != false || body["reason"] != "unknown_recipient" {
+		t.Fatalf("unknown recipient was not reported: %v", body)
+	}
+	var customers int
+	if err := db.DB.QueryRow(`SELECT count(*) FROM customers`).Scan(&customers); err != nil || customers != 0 {
+		t.Fatalf("a phone-only customer was invented: customers=%d err=%v", customers, err)
+	}
+}
+
+// Regression: a phone-only customer row makes SQLite abort the Shopify upsert,
+// which infers ON CONFLICT(shopify_id), so that customer's orders stop syncing.
+func TestRecorderNeverCreatesRowsThatBreakTheShopifyUpsert(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	phone := "919876500009"
+	recordExternal(t, server, `{"phone":"`+phone+`","template":"t","language":"en_US",
+		"idempotency_key":"key-nine","meta_message_id":"wamid.NINE","status":"accepted"}`)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := db.DB.Exec(`INSERT INTO customers(shopify_id,phone_ciphertext,phone_hash,whatsapp_consent,created_at,updated_at)
+		VALUES('gid://shopify/Customer/9',x'01',?,'opted_in',?,?)
+		ON CONFLICT(shopify_id) DO UPDATE SET phone_hash=excluded.phone_hash,updated_at=excluded.updated_at`,
+		security.KeyedHash(server.Config.PIIHashKey, phone), now, now)
+	if err != nil {
+		t.Fatalf("Shopify upsert still blocked by a recorder-created row: %v", err)
+	}
+}
+
+func TestExternalFailureCodeSuppressesTheRecipient(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	phone := "919876500010"
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,phone_hash,whatsapp_consent,created_at,updated_at) VALUES(10,'gid://shopify/Customer/10',x'01',?,'opted_in',?,?)`,
+		security.KeyedHash(server.Config.PIIHashKey, phone), now, now)
+	response := recordExternal(t, server, `{"phone":"`+phone+`","template":"t","language":"en_US",
+		"idempotency_key":"key-ten","status":"failed","failure_code":"131050","failure_reason":"opted out"}`)
+	if response.Code != 200 {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
 	}
 	var consent string
-	if err := db.DB.QueryRow(`SELECT c.whatsapp_consent FROM customers c JOIN outbound_messages m ON m.customer_id=c.id WHERE m.idempotency_key='key-three'`).Scan(&consent); err != nil {
+	if err := db.DB.QueryRow(`SELECT whatsapp_consent FROM customers WHERE id=10`).Scan(&consent); err != nil {
 		t.Fatal(err)
 	}
-	if consent != "unknown" {
-		t.Fatalf("synthesised customer consent=%q, must not imply opt-in", consent)
+	if consent != "opted_out" {
+		t.Fatalf("consent=%q: Meta reported an opt-out and the daemon would keep sending", consent)
+	}
+}
+
+func TestExternalFailureReasonIsScrubbedOfPhoneNumbers(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	phone := "919876500011"
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,phone_hash,whatsapp_consent,created_at,updated_at) VALUES(11,'gid://shopify/Customer/11',x'01',?,'opted_in',?,?)`,
+		security.KeyedHash(server.Config.PIIHashKey, phone), now, now)
+	recordExternal(t, server, `{"phone":"`+phone+`","template":"t","language":"en_US",
+		"idempotency_key":"key-eleven","status":"failed","failure_code":"131030",
+		"failure_reason":"Recipient phone number not in allowed list: +919876500011"}`)
+	var reason string
+	if err := db.DB.QueryRow(`SELECT failure_reason FROM outbound_messages WHERE idempotency_key='key-eleven'`).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(reason, "919876500011") {
+		t.Fatalf("failure_reason stored a plaintext phone number: %q", reason)
 	}
 }
 

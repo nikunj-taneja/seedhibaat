@@ -148,7 +148,7 @@ def record_message(record: dict[str, object], *, category: str) -> dict[str, obj
         "phone": str(record["phone"]),
         "template": str(record["template"]),
         "language": str(record["language"]),
-        "category": category,
+        "category": str(record.get("category") or category),
         "idempotency_key": str(record["idempotency_key"]),
         "parameter_fingerprint": str(record.get("parameter_fingerprint", "")),
         "status": "accepted" if record.get("status") == "accepted" else "failed",
@@ -185,22 +185,35 @@ def run_ledger_sync(args: argparse.Namespace) -> int:
         raise SeedhiBaatError(
             "daemon is unreachable; start it or set SEEDHIBAAT_OPERATOR_URL to a tunnel"
         )
-    recorded = already = unresolved = 0
+    recorded = already = unresolved = unknown = malformed = 0
     with ledger_path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
             if args.since and str(record.get("timestamp", "")) < args.since:
                 continue
             response = record_message(record, category=args.category)
             if response is None:
                 unresolved += 1
-            elif response.get("recorded"):
+            elif response.get("reason") == "unknown_recipient":
+                unknown += 1
+            elif response.get("recorded") or response.get("upgraded"):
                 recorded += 1
             else:
                 already += 1
     print(f"Newly recorded: {recorded}; already present: {already}; failed: {unresolved}")
+    if unknown:
+        print(
+            f"{unknown} record(s) name a recipient with no customer row. They stay unrecorded "
+            "until the recipient is synced from Shopify or their consent is imported."
+        )
+    if malformed:
+        print(f"{malformed} ledger line(s) could not be parsed and were skipped.")
     if unresolved:
         print("Re-run after fixing the daemon connection; recording is idempotent.")
     return 1 if unresolved else 0
@@ -426,6 +439,7 @@ def run_send(args: argparse.Namespace) -> int:
             "--skip-daemon-ledger to send untracked and reconcile later with 'ledger sync'."
         )
     unrecorded = 0
+    unknown_recipients = 0
 
     env = require_env()
     root = Path.cwd()
@@ -451,6 +465,7 @@ def run_send(args: argparse.Namespace) -> int:
             "phone": f"+{recipient.phone}",
             "template": args.template,
             "language": args.language,
+            "category": args.category,
             "idempotency_key": key,
         }
         if components:
@@ -473,15 +488,22 @@ def run_send(args: argparse.Namespace) -> int:
             append_jsonl(ledger_path, record)
             sent_keys.add(key)
             accepted += 1
-        except SeedhiBaatError as exc:
+        except (SeedhiBaatError, OSError) as exc:
+            # OSError covers socket timeouts, which send_template does not wrap;
+            # letting one escape would abort the run after Meta may already have
+            # accepted the message, leaving no record anywhere.
             record = {**base, "status": "failed", "error": str(exc)}
             append_jsonl(ledger_path, record)
             failed += 1
         # The daemon owns reporting and revenue attribution, so an unrecorded
         # send is an invisible send. The ledger line is written first, which
         # lets `ledger sync` replay anything the daemon missed.
-        if record_to_daemon and not record_message(record, category=args.category):
-            unrecorded += 1
+        if record_to_daemon:
+            response = record_message(record, category=args.category)
+            if response is None:
+                unrecorded += 1
+            elif response.get("reason") == "unknown_recipient":
+                unknown_recipients += 1
         append_jsonl(run_path, record)
 
     print(f"Accepted: {accepted}; failed: {failed}; skipped duplicates: {skipped}")
@@ -492,6 +514,12 @@ def run_send(args: argparse.Namespace) -> int:
                 f"WARNING: {unrecorded} message(s) are not in the daemon ledger. "
                 "They will not appear in reporting or attribute revenue until you run: "
                 "seedhibaat ledger sync"
+            )
+        if unknown_recipients:
+            print(
+                f"WARNING: {unknown_recipients} recipient(s) have no customer record, so their "
+                "messages were not recorded and cannot attribute revenue. Sync them from Shopify "
+                "or import their consent, then run: seedhibaat ledger sync"
             )
     else:
         print("WARNING: --skip-daemon-ledger was used. These messages are untracked; run 'seedhibaat ledger sync' to record them.")

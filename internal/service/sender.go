@@ -165,26 +165,8 @@ func (p *Processor) sendWhatsApp(ctx context.Context, job store.Job) error {
 		if errors.As(err, &apiError) && !apiError.Retryable() {
 			stamp := time.Now().UTC().Format(time.RFC3339Nano)
 			_, _ = p.Store.DB.ExecContext(ctx, `UPDATE outbound_messages SET state='failed',failed_at=?,failure_code=?,failure_reason=?,updated_at=? WHERE id=?`, stamp, fmt.Sprint(apiError.Code), truncate(safeLogError(errors.New(apiError.Message)), 500), stamp, messageID)
-			if apiError.Code == 131026 || apiError.Code == 131050 {
-				consent := "opted_in"
-				reason := "Meta reported an undeliverable recipient"
-				invalid := 1
-				if apiError.Code == 131050 {
-					consent = "opted_out"
-					reason = "Meta marketing opt-out"
-					invalid = 0
-				}
-				query := `UPDATE customers SET whatsapp_consent=?,invalid_number=CASE WHEN ?=1 THEN 1 ELSE invalid_number END,suppressed_at=coalesce(suppressed_at,?),suppression_reason=?,updated_at=? WHERE id=?`
-				if apiError.Code == 131050 {
-					query += ` AND whatsapp_consent<>'opted_out'`
-				}
-				result, _ := p.Store.DB.ExecContext(ctx, query, consent, invalid, stamp, reason, stamp, payload.CustomerID)
-				if apiError.Code == 131050 && result != nil {
-					if changed, _ := result.RowsAffected(); changed == 1 {
-						_ = p.Store.Audit(ctx, "meta", "customer.opt_out", "customer", fmt.Sprint(payload.CustomerID), `{"source":"meta_error_131050"}`)
-					}
-				}
-				_ = p.Store.CancelCustomerWork(ctx, payload.CustomerID, reason)
+			if _, err := p.Store.SuppressForMetaFailure(ctx, payload.CustomerID, apiError.Code); err != nil {
+				p.Logger.Error("suppress after send failure", "error", safeLogError(err))
 			}
 			return &noRetryError{err: err}
 		}

@@ -66,6 +66,11 @@ optional read-only aggregate metrics dashboard.
 - Manual replay is limited to failed jobs. Never replay an accepted or unknown
   Meta outcome; reconcile it first to avoid a duplicate.
 
+## Reporting to the user
+
+- Load the `user-facing-writing` skill before writing any report, summary,
+  explanation, or status update for the user, and follow it.
+
 ## Development
 
 ```bash
