@@ -613,3 +613,21 @@ func TestShopifyAppUninstallCancelsJobsAndDeactivatesWorkflows(t *testing.T) {
 		t.Fatalf("active=%d run=%s job=%s", active, runState, jobState)
 	}
 }
+
+func TestCanonicalPhoneJoinsLocalAndInternationalForms(t *testing.T) {
+	// A Shopify order address, the same number in international form, and the
+	// digits Meta reports must all reach one identity.
+	forms := []string{"98765 43210", "+91 98765-43210", "0091 9876543210", "919876543210"}
+	want := "919876543210"
+	for _, form := range forms {
+		if got := normalizePhone(form, "91"); got != want {
+			t.Fatalf("normalizePhone(%q) = %q, want %q", form, got, want)
+		}
+	}
+	if got := normalizePhone("14155552671", "91"); got != "14155552671" {
+		t.Fatalf("a full international number must not gain a country code: %q", got)
+	}
+	if got := normalizePhone("9876543210", ""); got != "9876543210" {
+		t.Fatalf("without a configured country code the number is left alone: %q", got)
+	}
+}

@@ -844,7 +844,7 @@ func (s *HTTPServer) importConsent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "consent_at must use RFC3339", 400)
 			return
 		}
-		hash := security.KeyedHash(s.Config.PIIHashKey, normalizePhone(record.Phone))
+		hash := security.KeyedHash(s.Config.PIIHashKey, normalizePhone(record.Phone, s.Config.DefaultCountryCode))
 		result, err := s.Store.DB.ExecContext(r.Context(), `UPDATE customers SET whatsapp_consent=?,consent_updated_at=?,suppressed_at=CASE WHEN ?='opted_out' THEN ? ELSE NULL END,suppression_reason=CASE WHEN ?='opted_out' THEN 'consent import' ELSE NULL END,updated_at=? WHERE phone_hash=?`, record.Consent, stamp, record.Consent, stamp, record.Consent, time.Now().UTC().Format(time.RFC3339Nano), hash)
 		if err != nil {
 			http.Error(w, "failed", 500)
@@ -885,7 +885,7 @@ func (s *HTTPServer) reserveExternalMessage(w http.ResponseWriter, r *http.Reque
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	phone := normalizePhone(request.Phone)
+	phone := normalizePhone(request.Phone, s.Config.DefaultCountryCode)
 	if phone == "" || request.Template == "" || request.Language == "" || request.IdempotencyKey == "" {
 		http.Error(w, "phone, template, language, and idempotency_key are required", 400)
 		return
@@ -951,7 +951,7 @@ func (s *HTTPServer) recordExternalMessage(w http.ResponseWriter, r *http.Reques
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	phone := normalizePhone(request.Phone)
+	phone := normalizePhone(request.Phone, s.Config.DefaultCountryCode)
 	if phone == "" || request.Template == "" || request.Language == "" || request.IdempotencyKey == "" {
 		http.Error(w, "phone, template, language, and idempotency_key are required", 400)
 		return

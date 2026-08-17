@@ -41,6 +41,7 @@ func main() {
 	defer rows.Close()
 
 	var total, decryptFail, hasNonDigit, hashMatchesStored int
+	lengths := map[int]int{}
 	byDigits := map[string][]int64{}
 	withShopify := map[string]bool{}
 	created := map[string]int{}
@@ -67,6 +68,7 @@ func main() {
 			hashMatchesStored++
 		}
 		d := digitsOnly(stored)
+		lengths[len(d)]++
 		byDigits[d] = append(byDigits[d], id)
 		if hasShopify {
 			withShopify[d] = true
@@ -101,6 +103,10 @@ func main() {
 		jobs.Close()
 	}
 
+	fmt.Println("stored phone lengths (digits):")
+	for length, n := range lengths {
+		fmt.Printf("  %2d digits: %d\n", length, n)
+	}
 	fmt.Printf("customers with a phone:            %d\n", total)
 	fmt.Printf("  undecryptable:                   %d\n", decryptFail)
 	fmt.Printf("  stored phone has non-digits:     %d\n", hasNonDigit)

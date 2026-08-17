@@ -264,7 +264,7 @@ func (p *Processor) upsertCustomerTx(ctx context.Context, tx *sql.Tx, customer s
 	} else if err != nil {
 		return sql.NullInt64{}, err
 	}
-	phone := normalizePhone(customer.EffectivePhone())
+	phone := normalizePhone(customer.EffectivePhone(), p.Config.DefaultCountryCode)
 	var phoneHash any
 	var phoneCiphertext any
 	if phone != "" {

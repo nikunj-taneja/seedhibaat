@@ -15,6 +15,7 @@ type Config struct {
 	PublicBaseURL              string
 	RedirectAllowedHosts       map[string]bool
 	DatabasePath               string
+	DefaultCountryCode         string
 	WorkflowDir                string
 	LogLevel                   string
 	APIKey                     string
@@ -57,6 +58,7 @@ func Load() (Config, error) {
 		PublicBaseURL:              strings.TrimRight(os.Getenv("SEEDHIBAAT_PUBLIC_BASE_URL"), "/"),
 		RedirectAllowedHosts:       envHosts("SEEDHIBAAT_REDIRECT_ALLOWED_HOSTS"),
 		DatabasePath:               env("SEEDHIBAAT_DATABASE_PATH", "state/seedhibaat.db"),
+		DefaultCountryCode:         env("SEEDHIBAAT_DEFAULT_COUNTRY_CODE", ""),
 		WorkflowDir:                env("SEEDHIBAAT_WORKFLOW_DIR", "config/workflows"),
 		LogLevel:                   env("SEEDHIBAAT_LOG_LEVEL", "info"),
 		APIKey:                     os.Getenv("SEEDHIBAAT_API_KEY"),

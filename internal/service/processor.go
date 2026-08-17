@@ -362,7 +362,7 @@ func cancelCustomerWorkTx(ctx context.Context, tx *sql.Tx, customerID int64, rea
 }
 
 func (p *Processor) recordInbound(ctx context.Context, message meta.InboundMessage) error {
-	phoneHash := security.KeyedHash(p.Config.PIIHashKey, normalizePhone(message.From))
+	phoneHash := security.KeyedHash(p.Config.PIIHashKey, normalizePhone(message.From, p.Config.DefaultCountryCode))
 	var customerID sql.NullInt64
 	_ = p.Store.DB.QueryRowContext(ctx, `SELECT id FROM customers WHERE phone_hash=?`, phoneHash).Scan(&customerID)
 	body := strings.TrimSpace(message.Body())
@@ -745,16 +745,25 @@ func nullableString(value string) any {
 // producer: Shopify sync, inbound replies, consent import, and the external
 // recorder. They must agree, or the same person hashes to two identities and a
 // STOP recorded against one keeps receiving campaigns aimed at the other.
-func normalizePhone(value string) string {
-	var digits strings.Builder
+//
+// Shopify order addresses often hold a local number with no country code,
+// while Meta always reports full international digits. defaultCountry closes
+// that gap; without it the same person hashes two ways.
+func normalizePhone(value, defaultCountry string) string {
+	var builder strings.Builder
 	for _, r := range value {
 		if r >= '0' && r <= '9' {
-			digits.WriteRune(r)
+			builder.WriteRune(r)
 		}
 	}
-	normalized := digits.String()
-	return strings.TrimPrefix(normalized, "00")
+	digits := strings.TrimPrefix(builder.String(), "00")
+	country := strings.TrimPrefix(strings.TrimSpace(defaultCountry), "+")
+	if country != "" && len(digits) > 0 && len(digits) <= 10 && !strings.HasPrefix(digits, country) {
+		digits = country + digits
+	}
+	return digits
 }
+
 func isOptOut(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "stop", "unsubscribe", "opt out", "optout", "cancel", "band":
