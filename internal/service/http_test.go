@@ -424,6 +424,55 @@ func TestCampaignActivationMaterializesAudienceBeforeQueueWrites(t *testing.T) {
 	}
 }
 
+func TestPhoneKeyedSegmentHashesInTheDaemonAndStoresNoPlaintext(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	server.Config.DefaultCountryCode = "91"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// The CSV carries a local number; the stored hash is on the canonical form.
+	local, canonical := "98765 00042", "919876500042"
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,phone_hash,whatsapp_consent,created_at,updated_at) VALUES(1,'gid://shopify/Customer/1',x'01',?,'opted_in',?,?)`,
+		security.KeyedHash(server.Config.PIIHashKey, canonical), now, now)
+
+	body := fmt.Sprintf(`{"name":"phone audience","segment":{"kind":"frozen_phones","require_whatsapp_consent":true,"phones":[%q]},"template":"approved","language":"en_US"}`, local)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/campaigns", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer api")
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"audience_count":1`) {
+		t.Fatalf("the local number did not match the canonical hash: %s", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"frozen_count":1`) || strings.Contains(response.Body.String(), "phone_hashes") {
+		t.Fatalf("response did not redact the audience: %s", response.Body.String())
+	}
+
+	var storedSegment string
+	if err := db.DB.QueryRow(`SELECT segment_json FROM campaigns`).Scan(&storedSegment); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedSegment, local) || strings.Contains(storedSegment, canonical) || strings.Contains(storedSegment, `"phones"`) {
+		t.Fatalf("stored segment kept a plaintext number: %s", storedSegment)
+	}
+	if !strings.Contains(storedSegment, security.KeyedHash(server.Config.PIIHashKey, canonical)) {
+		t.Fatalf("stored segment lost its hashes: %s", storedSegment)
+	}
+
+	// A caller cannot bypass the daemon's hashing by supplying hashes itself.
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/segments/preview", strings.NewReader(`{"kind":"frozen_phones","require_whatsapp_consent":true,"phone_hashes":["forged"]}`))
+	req.Header.Set("Authorization", "Bearer api")
+	req.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("supplied hashes were accepted: code=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestPerRecipientTemplateParametersOverrideOnlyTheirOwnSlot(t *testing.T) {
 	server, db := testHTTPServer(t)
 	defer db.Close()

@@ -618,9 +618,38 @@ func (s *HTTPServer) resolveRecipientParams(ctx context.Context, entries []recip
 	return resolved, nil
 }
 
+// hashSegmentPhones converts the plaintext numbers a caller supplies into the
+// canonical phone hashes the customer table stores, then clears the plaintext.
+// The operator CLI has no access to the hash key, so this is the only place the
+// conversion can happen, and no plaintext number ever reaches storage.
+func (s *HTTPServer) hashSegmentPhones(definition segment.Definition) (segment.Definition, error) {
+	if definition.Kind != "frozen_phones" {
+		return definition, nil
+	}
+	if len(definition.PhoneHashes) > 0 {
+		return definition, errors.New("phone_hashes cannot be supplied; send phones and the daemon will hash them")
+	}
+	hashes := make([]string, 0, len(definition.Phones))
+	for _, phone := range definition.Phones {
+		digits := normalizePhone(phone, s.Config.DefaultCountryCode)
+		if digits == "" {
+			return definition, errors.New("phones contains a value with no digits")
+		}
+		hashes = append(hashes, security.KeyedHash(s.Config.PIIHashKey, digits))
+	}
+	definition.Phones = nil
+	definition.PhoneHashes = hashes
+	return definition, nil
+}
+
 func (s *HTTPServer) segmentPreview(w http.ResponseWriter, r *http.Request) {
 	var definition segment.Definition
 	if !decodeJSON(w, r, &definition) {
+		return
+	}
+	definition, err := s.hashSegmentPhones(definition)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
 		return
 	}
 	result, err := segment.Preview(r.Context(), s.Store.DB, definition, time.Now())
@@ -679,6 +708,12 @@ func (s *HTTPServer) createCampaign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "frequency_window must be a duration", 400)
 		return
 	}
+	hashedSegment, err := s.hashSegmentPhones(request.Segment)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	request.Segment = hashedSegment
 	result, err := segment.Preview(r.Context(), s.Store.DB, request.Segment, time.Now())
 	if err != nil {
 		http.Error(w, err.Error(), 400)

@@ -21,13 +21,24 @@ type Definition struct {
 	ExcludeProductTag    string   `json:"exclude_product_tag,omitempty"`
 	ExcludeRecentDays    int      `json:"exclude_recent_purchase_days,omitempty"`
 	CustomerShopifyIDs   []string `json:"customer_shopify_ids,omitempty"`
-	FrozenCount          int      `json:"frozen_count,omitempty"`
+	// Phones carries plaintext numbers at the API boundary only. The daemon
+	// holds the hash key, so it hashes them into PhoneHashes and clears this
+	// field before the definition is stored. A stored definition that still
+	// carries plaintext fails Validate.
+	Phones      []string `json:"phones,omitempty"`
+	PhoneHashes []string `json:"phone_hashes,omitempty"`
+	FrozenCount int      `json:"frozen_count,omitempty"`
 }
 
 func (d Definition) Public() Definition {
-	if d.Kind == "frozen_csv" {
+	switch d.Kind {
+	case "frozen_csv":
 		d.FrozenCount = len(d.CustomerShopifyIDs)
 		d.CustomerShopifyIDs = nil
+	case "frozen_phones":
+		d.FrozenCount = len(d.PhoneHashes)
+		d.PhoneHashes = nil
+		d.Phones = nil
 	}
 	return d
 }
@@ -62,6 +73,13 @@ func Preview(ctx context.Context, db *sql.DB, definition Definition, now time.Ti
 			args = append(args, shopifyID)
 		}
 		where = append(where, "c.shopify_id IN ("+strings.Join(placeholders, ",")+")")
+	case "frozen_phones":
+		placeholders := make([]string, len(definition.PhoneHashes))
+		for index, hash := range definition.PhoneHashes {
+			placeholders[index] = "?"
+			args = append(args, hash)
+		}
+		where = append(where, "c.phone_hash IN ("+strings.Join(placeholders, ",")+")")
 	case "product_buyers":
 		where = append(where, `EXISTS (SELECT 1 FROM orders o JOIN order_lines ol ON ol.order_id=o.shopify_id LEFT JOIN products p ON p.shopify_id=ol.product_id WHERE o.customer_id=c.id AND o.cancelled_at IS NULL AND o.refunded_at IS NULL AND o.return_recorded_at IS NULL AND `+purchaseProductCondition+`)`)
 		args = append(args, purchaseProductArgs...)
@@ -143,6 +161,29 @@ func (d Definition) Validate() error {
 				return errors.New("customer_shopify_ids contains a duplicate")
 			}
 			seen[shopifyID] = struct{}{}
+		}
+	case "frozen_phones":
+		if !d.RequireConsent {
+			return errors.New("frozen_phones requires WhatsApp consent")
+		}
+		if len(d.Phones) > 0 {
+			return errors.New("phones must be hashed by the daemon before the segment is used")
+		}
+		if len(d.PhoneHashes) == 0 {
+			return errors.New("phones is required")
+		}
+		if len(d.PhoneHashes) > 10000 {
+			return errors.New("phones cannot exceed 10000 entries")
+		}
+		seen := make(map[string]struct{}, len(d.PhoneHashes))
+		for _, hash := range d.PhoneHashes {
+			if hash == "" {
+				return errors.New("phones contains an empty number")
+			}
+			if _, exists := seen[hash]; exists {
+				return errors.New("phones contains a duplicate")
+			}
+			seen[hash] = struct{}{}
 		}
 	case "not_reordered":
 	case "product_buyers", "back_in_stock":
