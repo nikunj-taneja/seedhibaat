@@ -1037,28 +1037,17 @@ func (s *HTTPServer) recordExternalMessage(w http.ResponseWriter, r *http.Reques
 func (s *HTTPServer) importCustomers(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ShopifyIDs []string `json:"shopify_ids"`
-		Records    []struct {
-			ShopifyID string `json:"shopify_id"`
-			Phone     string `json:"phone,omitempty"`
-		} `json:"records"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	for _, id := range request.ShopifyIDs {
-		request.Records = append(request.Records, struct {
-			ShopifyID string `json:"shopify_id"`
-			Phone     string `json:"phone,omitempty"`
-		}{ShopifyID: id})
-	}
-	if len(request.Records) == 0 || len(request.Records) > 5000 {
-		http.Error(w, "records must hold 1-5000 entries", 400)
+	if len(request.ShopifyIDs) == 0 || len(request.ShopifyIDs) > 5000 {
+		http.Error(w, "shopify_ids must hold 1-5000 entries", 400)
 		return
 	}
 	queued, duplicate := 0, 0
-	phoneOutcomes := map[string]int{}
-	for _, record := range request.Records {
-		shopifyID := strings.TrimSpace(record.ShopifyID)
+	for _, shopifyID := range request.ShopifyIDs {
+		shopifyID = strings.TrimSpace(shopifyID)
 		if !strings.HasPrefix(shopifyID, "gid://shopify/Customer/") {
 			http.Error(w, "every entry must be a Shopify customer GID", 400)
 			return
@@ -1083,24 +1072,10 @@ func (s *HTTPServer) importCustomers(w http.ResponseWriter, r *http.Request) {
 		} else {
 			duplicate++
 		}
-		if phone := normalizePhone(record.Phone); phone != "" {
-			ciphertext, err := security.Encrypt(s.Config.PIIHashKey, []byte(phone))
-			if err != nil {
-				http.Error(w, "failed", 500)
-				return
-			}
-			outcome, err := s.Store.AttachCustomerPhone(r.Context(), shopifyID, security.KeyedHash(s.Config.PIIHashKey, phone), ciphertext)
-			if err != nil {
-				s.Logger.Error("attach customer phone", "error", err)
-				http.Error(w, "failed", 500)
-				return
-			}
-			phoneOutcomes[outcome]++
-		}
 	}
-	details, _ := json.Marshal(map[string]any{"queued": queued, "already_queued": duplicate, "phone_links": phoneOutcomes})
+	details, _ := json.Marshal(map[string]any{"queued": queued, "already_queued": duplicate})
 	_ = s.Store.Audit(r.Context(), "operator", "customer.import", "customer", "", string(details))
-	writeJSON(w, 202, map[string]any{"queued": queued, "already_queued": duplicate, "phone_links": phoneOutcomes})
+	writeJSON(w, 202, map[string]any{"queued": queued, "already_queued": duplicate})
 }
 
 func (s *HTTPServer) authenticated(next http.Handler) http.Handler {

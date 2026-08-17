@@ -14,7 +14,8 @@ const ordersQuery = `query SeedhiBaatOrders($first: Int!, $after: String, $query
   orders(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
     pageInfo { hasNextPage endCursor }
     nodes {
-      id name processedAt updatedAt cancelledAt displayFinancialStatus currencyCode
+      id name processedAt updatedAt cancelledAt displayFinancialStatus currencyCode phone
+      shippingAddress { phone } billingAddress { phone }
       currentTotalPriceSet { shopMoney { amount currencyCode } }
       customer { id firstName lastName tags defaultPhoneNumber { phoneNumber whatsAppMarketingConsent { state updatedAt } } }
       lineItems(first: 100) { nodes { id title quantity currentQuantity sku
@@ -32,7 +33,8 @@ const ordersQuery = `query SeedhiBaatOrders($first: Int!, $after: String, $query
 
 const orderByIDQuery = `query SeedhiBaatOrder($id: ID!) {
   order(id: $id) {
-    id name processedAt updatedAt cancelledAt displayFinancialStatus currencyCode
+    id name processedAt updatedAt cancelledAt displayFinancialStatus currencyCode phone
+    shippingAddress { phone } billingAddress { phone }
     currentTotalPriceSet { shopMoney { amount currencyCode } }
     customer { id firstName lastName tags defaultPhoneNumber { phoneNumber whatsAppMarketingConsent { state updatedAt } } }
     lineItems(first: 100) { nodes { id title quantity currentQuantity sku
@@ -65,7 +67,14 @@ type Order struct {
 	CancelledAt            *string `json:"cancelledAt"`
 	DisplayFinancialStatus string  `json:"displayFinancialStatus"`
 	CurrencyCode           string  `json:"currencyCode"`
-	CurrentTotalPriceSet   struct {
+	Phone                  string  `json:"phone,omitempty"`
+	ShippingAddress        *struct {
+		Phone string `json:"phone"`
+	} `json:"shippingAddress"`
+	BillingAddress *struct {
+		Phone string `json:"phone"`
+	} `json:"billingAddress"`
+	CurrentTotalPriceSet struct {
 		ShopMoney Money `json:"shopMoney"`
 	} `json:"currentTotalPriceSet"`
 	Customer  *Customer `json:"customer"`
@@ -96,6 +105,20 @@ type Customer struct {
 			UpdatedAt string `json:"updatedAt"`
 		} `json:"whatsAppMarketingConsent"`
 	} `json:"defaultPhoneNumber"`
+}
+
+// EffectiveCustomerPhone returns the buyer's number as recorded on the order.
+// Shopify withholds protected customer data at the customer level unless the
+// app is approved for it, but the same number is readable on the order, so
+// this is the reliable source.
+func (order Order) EffectiveCustomerPhone() string {
+	if order.ShippingAddress != nil && order.ShippingAddress.Phone != "" {
+		return order.ShippingAddress.Phone
+	}
+	if order.BillingAddress != nil && order.BillingAddress.Phone != "" {
+		return order.BillingAddress.Phone
+	}
+	return order.Phone
 }
 
 func (customer Customer) EffectivePhone() string {

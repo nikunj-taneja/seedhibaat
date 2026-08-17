@@ -773,7 +773,7 @@ def run_customers_import(args: argparse.Namespace) -> int:
     default_country = args.default_country_code or os.environ.get("SEEDHIBAAT_DEFAULT_COUNTRY_CODE", "")
     rows = read_recipient_rows(args.csv, args.phone_column, [], default_country)
     token, env = _shopify_token()
-    records: list[dict[str, str]] = []
+    records: list[str] = []
     unmatched = ambiguous = invalid = 0
     for row in rows:
         phone = row.phone
@@ -785,7 +785,7 @@ def run_customers_import(args: argparse.Namespace) -> int:
         if len(nodes) > 1:
             ambiguous += 1
             continue
-        records.append({"shopify_id": nodes[0]["id"], "phone": phone})
+        records.append(nodes[0]["id"])
 
     print(f"CSV rows: {len(rows)}")
     print(f"Matched a Shopify customer: {len(records)}")
@@ -796,10 +796,9 @@ def run_customers_import(args: argparse.Namespace) -> int:
     if not args.confirm:
         print("Dry run. Add --confirm to queue the import in the daemon.")
         return 0
-    # Shopify returns null for protected customer data, so the phone the
-    # operator already holds is sent with the ID; the daemon links it only when
-    # the customer has no number on file.
-    response = daemon_request("/api/v1/customers/import", method="POST", payload={"records": records})
+    # The daemon reads each buyer's number from their own Shopify order, which
+    # stays readable when customer-level data does not.
+    response = daemon_request("/api/v1/customers/import", method="POST", payload={"shopify_ids": records})
     print(json.dumps(response, indent=2))
     print("The daemon imports these in the background. Re-run 'seedhibaat ledger sync' afterwards.")
     return 0

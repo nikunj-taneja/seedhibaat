@@ -67,3 +67,28 @@ func TestDecodeWebhookOrderAcceptsOrderGraphQLID(t *testing.T) {
 		t.Fatalf("order id=%q", id)
 	}
 }
+
+func TestOrderPhoneFallsBackThroughAddresses(t *testing.T) {
+	shipping := Order{Phone: "+911111111111"}
+	shipping.ShippingAddress = &struct {
+		Phone string `json:"phone"`
+	}{Phone: "+912222222222"}
+	if got := shipping.EffectiveCustomerPhone(); got != "+912222222222" {
+		t.Fatalf("shipping address should win: %s", got)
+	}
+
+	billing := Order{Phone: "+911111111111"}
+	billing.BillingAddress = &struct {
+		Phone string `json:"phone"`
+	}{Phone: "+913333333333"}
+	if got := billing.EffectiveCustomerPhone(); got != "+913333333333" {
+		t.Fatalf("billing address should be used next: %s", got)
+	}
+
+	if got := (Order{Phone: "+911111111111"}).EffectiveCustomerPhone(); got != "+911111111111" {
+		t.Fatalf("order phone is the last resort: %s", got)
+	}
+	if got := (Order{}).EffectiveCustomerPhone(); got != "" {
+		t.Fatalf("no phone anywhere should be empty: %s", got)
+	}
+}

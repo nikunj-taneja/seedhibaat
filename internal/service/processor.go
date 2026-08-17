@@ -543,6 +543,17 @@ func (p *Processor) processJob(ctx context.Context, job store.Job) error {
 		if err != nil {
 			return err
 		}
+		if customer.EffectivePhone() == "" {
+			// Shopify withholds customer-level protected data from this app,
+			// so the number comes from the customer's own order instead. A
+			// customer with no number can never be found by phone, and a
+			// message to them could never be accounted for.
+			phone, err := p.Shopify.CustomerOrderPhone(ctx, payload.CustomerID)
+			if err != nil {
+				return err
+			}
+			customer.Phone = phone
+		}
 		return p.upsertCustomer(ctx, customer)
 	case "send_whatsapp":
 		return p.sendWhatsApp(ctx, job)
@@ -729,6 +740,7 @@ func nullableString(value string) any {
 	}
 	return value
 }
+
 // normalizePhone is the single canonical form for a phone number across every
 // producer: Shopify sync, inbound replies, consent import, and the external
 // recorder. They must agree, or the same person hashes to two identities and a

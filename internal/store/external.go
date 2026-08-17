@@ -44,7 +44,6 @@ type ExternalMessageResult struct {
 	Unresolved bool
 }
 
-
 // ReserveExternalMessage accounts for a message before it is sent. Nothing may
 // spend money without a record of who is being messaged, with which template,
 // and when, so the caller must reserve first and only then call Meta. A
@@ -241,49 +240,4 @@ func nullableText(value string) any {
 		return nil
 	}
 	return value
-}
-
-// AttachCustomerPhone links a phone number the operator already holds to a
-// Shopify customer. Shopify returns null for protected customer data unless
-// the app is approved for PII, so a customer imported from Shopify can arrive
-// with no phone at all, and a message can only be recorded against a customer
-// the daemon can find by phone.
-//
-// It never overwrites a phone already on file, and never moves a number
-// between customers.
-func (s *Store) AttachCustomerPhone(ctx context.Context, shopifyID, phoneHash string, ciphertext []byte) (string, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-
-	var ownerShopifyID sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT coalesce(shopify_id,'') FROM customers WHERE phone_hash=?`, phoneHash).Scan(&ownerShopifyID)
-	if err == nil && ownerShopifyID.String != shopifyID {
-		return "conflict", tx.Commit()
-	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", err
-	}
-
-	var existingHash sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT phone_hash FROM customers WHERE shopify_id=?`, shopifyID).Scan(&existingHash)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "unknown_customer", tx.Commit()
-	}
-	if err != nil {
-		return "", err
-	}
-	if existingHash.Valid && existingHash.String != "" {
-		if existingHash.String == phoneHash {
-			return "already_linked", tx.Commit()
-		}
-		return "already_has_phone", tx.Commit()
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `UPDATE customers SET phone_ciphertext=?,phone_hash=?,updated_at=? WHERE shopify_id=?`, ciphertext, phoneHash, now, shopifyID); err != nil {
-		return "", err
-	}
-	return "attached", tx.Commit()
 }

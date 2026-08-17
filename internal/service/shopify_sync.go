@@ -24,7 +24,13 @@ func (p *Processor) upsertOrder(ctx context.Context, order shopify.Order) error 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var customerID sql.NullInt64
 	if order.Customer != nil && order.Customer.ID != "" {
-		customerID, err = p.upsertCustomerTx(ctx, tx, *order.Customer, now)
+		customer := *order.Customer
+		if customer.EffectivePhone() == "" {
+			// The order carries the buyer's number even when Shopify withholds
+			// it on the customer record.
+			customer.Phone = order.EffectiveCustomerPhone()
+		}
+		customerID, err = p.upsertCustomerTx(ctx, tx, customer, now)
 		if err != nil {
 			return err
 		}
