@@ -3,26 +3,18 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
-import hashlib
 import json
 import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from .operator import OperatorError, daemon_request, register_operator_commands
-
-
-REQUIRED_ENV = (
-    "META_APP_ID",
-    "META_SYSTEM_USER_TOKEN",
-    "WHATSAPP_PHONE_NUMBER_ID",
-    "META_GRAPH_API_VERSION",
-)
 
 
 class SeedhiBaatError(Exception):
@@ -130,16 +122,6 @@ def read_recipient_rows(
     return recipients
 
 
-def require_env() -> dict[str, str]:
-    values = {name: os.environ.get(name, "").strip() for name in REQUIRED_ENV}
-    missing = [name for name, value in values.items() if not value]
-    if missing:
-        raise SeedhiBaatError("missing required environment variables: " + ", ".join(missing))
-    if not re.fullmatch(r"v\d+\.\d+", values["META_GRAPH_API_VERSION"]):
-        raise SeedhiBaatError("META_GRAPH_API_VERSION must look like v23.0")
-    return values
-
-
 def record_message(record: dict[str, object], *, category: str) -> dict[str, object] | None:
     """Put one CLI send into the daemon ledger, returning the daemon's response
     or None when it could not be recorded. Never raises: a recording failure
@@ -163,28 +145,6 @@ def record_message(record: dict[str, object], *, category: str) -> dict[str, obj
             payload["failure_code"] = match.group(1)
     try:
         response = daemon_request("/api/v1/messages/record", method="POST", payload=payload)
-        return response if isinstance(response, dict) else {}
-    except (OperatorError, urllib.error.URLError, json.JSONDecodeError, OSError):
-        return None
-
-
-def reserve_message(base: dict[str, object]) -> dict[str, object] | None:
-    """Ask the daemon to account for a message before it is sent.
-
-    Returns the daemon's answer, or None when the daemon could not be reached.
-    A caller that does not get `reserved: true` must not send.
-    """
-    payload = {
-        "phone": str(base["phone"]),
-        "template": str(base["template"]),
-        "language": str(base["language"]),
-        "category": str(base.get("category") or "MARKETING"),
-        "idempotency_key": str(base["idempotency_key"]),
-        "parameter_fingerprint": str(base.get("parameter_fingerprint", "")),
-        "attempted_at": str(base["timestamp"]),
-    }
-    try:
-        response = daemon_request("/api/v1/messages/reserve", method="POST", payload=payload)
         return response if isinstance(response, dict) else {}
     except (OperatorError, urllib.error.URLError, json.JSONDecodeError, OSError):
         return None
@@ -241,139 +201,23 @@ def run_ledger_sync(args: argparse.Namespace) -> int:
     return 1 if unresolved else 0
 
 
-def load_sent_keys(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    keys: set[str] = set()
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if line.strip():
-                record = json.loads(line)
-                if record.get("status") == "accepted":
-                    keys.add(record["idempotency_key"])
-    return keys
-
-
-def idempotency_key(
-    phone: str,
-    template: str,
-    language: str,
-    components: list[dict[str, object]] | None = None,
-) -> str:
-    rendered = json.dumps(components or [], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    material = f"{phone}\0{template}\0{language}\0{rendered}".encode()
-    return hashlib.sha256(material).hexdigest()
-
-
-def parameter_fingerprint(components: list[dict[str, object]]) -> str:
-    rendered = json.dumps(components, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(rendered.encode()).hexdigest()
-
-
-def parse_url_button_binding(value: str) -> tuple[int, str]:
-    index_text, separator, column = value.partition(":")
-    if not separator or not index_text.isdigit() or not column.strip():
-        raise argparse.ArgumentTypeError("must look like BUTTON_INDEX:CSV_COLUMN, for example 0:tracking_token")
-    return int(index_text), column.strip()
-
-
-def build_template_components(
+def build_template_parameters(
     values: dict[str, str],
     header_columns: Iterable[str],
     body_columns: Iterable[str],
-    url_button_bindings: Iterable[tuple[int, str]],
-    header_image_url: str = "",
-) -> list[dict[str, object]]:
-    components: list[dict[str, object]] = []
-    if header_image_url:
-        components.append(
-            {
-                "type": "header",
-                "parameters": [
-                    {"type": "image", "image": {"link": header_image_url}}
-                ],
-            }
-        )
-    header_parameters = [
-        {"type": "text", "text": values[column]} for column in header_columns
-    ]
-    if header_parameters:
-        components.append({"type": "header", "parameters": header_parameters})
+) -> dict[str, str]:
+    """Turn one CSV row into the daemon's parameter map.
 
-    body_parameters = [
-        {"type": "text", "text": values[column]} for column in body_columns
-    ]
-    if body_parameters:
-        components.append({"type": "body", "parameters": body_parameters})
-
-    for index, column in url_button_bindings:
-        components.append(
-            {
-                "type": "button",
-                "sub_type": "url",
-                "index": str(index),
-                "parameters": [{"type": "text", "text": values[column]}],
-            }
-        )
-    return components
-
-
-def append_jsonl(path: Path, record: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-
-def send_template(
-    *,
-    phone: str,
-    template: str,
-    language: str,
-    components: list[dict[str, object]],
-    env: dict[str, str],
-    timeout: float,
-) -> str:
-    url = (
-        "https://graph.facebook.com/"
-        f"{env['META_GRAPH_API_VERSION']}/{env['WHATSAPP_PHONE_NUMBER_ID']}/messages"
-    )
-    template_payload: dict[str, object] = {
-        "name": template,
-        "language": {"code": language},
-    }
-    if components:
-        template_payload["components"] = components
-    body = json.dumps(
-        {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": phone,
-            "type": "template",
-            "template": template_payload,
-        }
-    ).encode()
-    request = urllib.request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {env['META_SYSTEM_USER_TOKEN']}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise SeedhiBaatError(f"Meta HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise SeedhiBaatError(f"network error: {exc.reason}") from exc
-
-    try:
-        return payload["messages"][0]["id"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise SeedhiBaatError(f"unexpected Meta response: {payload}") from exc
+    Slots are named `header.N` and `body.N` in template order. Each value is a
+    `literal:`, because it comes from the row rather than from the customer or
+    order record the daemon holds.
+    """
+    parameters: dict[str, str] = {}
+    for index, column in enumerate(header_columns, start=1):
+        parameters[f"header.{index}"] = "literal:" + values[column]
+    for index, column in enumerate(body_columns, start=1):
+        parameters[f"body.{index}"] = "literal:" + values[column]
+    return parameters
 
 
 def display_preview(
@@ -392,10 +236,16 @@ def display_preview(
 
 
 def run_send(args: argparse.Namespace) -> int:
+    """Create a campaign in the daemon and, on approval, activate it.
+
+    The daemon is the only sender. It owns the outbound gate, consent and
+    suppression checks, quiet hours, the frequency cap, and the message ledger,
+    so nothing here talks to Meta.
+    """
     header_columns = args.header_param or []
     body_columns = args.body_param or []
-    url_button_bindings = args.url_button_param or []
     header_image_url = (args.header_image_url or "").strip()
+    tracked_url = (args.tracked_url or "").strip()
     if header_image_url:
         parsed_image_url = urllib.parse.urlparse(header_image_url)
         if (
@@ -411,20 +261,7 @@ def run_send(args: argparse.Namespace) -> int:
             raise SeedhiBaatError(
                 "an image header cannot be combined with text header parameters"
             )
-    button_indexes = [index for index, _ in url_button_bindings]
-    duplicate_button_indexes = sorted(
-        {index for index in button_indexes if button_indexes.count(index) > 1}
-    )
-    if duplicate_button_indexes:
-        raise SeedhiBaatError(
-            "duplicate URL button indexes: "
-            + ", ".join(str(index) for index in duplicate_button_indexes)
-        )
-    parameter_columns = [
-        *header_columns,
-        *body_columns,
-        *(column for _, column in url_button_bindings),
-    ]
+    parameter_columns = [*header_columns, *body_columns]
     recipients = read_recipient_rows(
         args.csv,
         args.phone_column,
@@ -432,144 +269,147 @@ def run_send(args: argparse.Namespace) -> int:
         args.default_country_code
         or os.environ.get("SEEDHIBAAT_DEFAULT_COUNTRY_CODE", ""),
     )
-    display_preview(
-        recipients, args.template, args.language, header_image_url
-    )
+    phones = [recipient.phone for recipient in recipients]
+    duplicates = sorted({phone for phone in phones if phones.count(phone) > 1})
+    if duplicates:
+        # Two rows for one number carry two sets of values, and there is no way
+        # to know which the operator meant. Numbers stay out of the message.
+        raise SeedhiBaatError(
+            f"{len(duplicates)} phone number(s) appear on more than one CSV row with "
+            "different template values; keep one row per recipient"
+        )
+
+    display_preview(recipients, args.template, args.language, header_image_url)
+    if tracked_url:
+        print(f"Tracked destination: {tracked_url}")
+    if parameter_columns:
+        for index, column in enumerate(header_columns, start=1):
+            print(f"Header parameter {index}: CSV column {column!r}")
+        for index, column in enumerate(body_columns, start=1):
+            print(f"Body parameter {index}: CSV column {column!r}")
+
+    if not daemon_reachable():
+        raise SeedhiBaatError(
+            "daemon is unreachable, so the audience cannot be frozen and no message "
+            "could be accounted for. Start the daemon or point SEEDHIBAAT_OPERATOR_URL "
+            "at it. The CLI has no send path of its own."
+        )
+
+    segment = {
+        "kind": "frozen_phones",
+        "require_whatsapp_consent": True,
+        "phones": phones,
+    }
     if not args.send:
-        print("Dry run only. Add --send after reviewing the recipient count.")
+        result = daemon_request(
+            "/api/v1/segments/preview", method="POST", payload=segment
+        )
+        eligible = int(result.get("eligible_count", 0)) if isinstance(result, dict) else 0
+        print(f"Daemon would send to: {eligible}")
+        _report_audience_gap(len(phones), eligible)
+        print("Dry run only. Nothing was created. Add --send to draft the campaign.")
         return 0
+
+    campaign_params = build_template_parameters(
+        recipients[0].values, header_columns, body_columns
+    )
+    recipient_params = [
+        {
+            "phone": recipient.phone,
+            "params": build_template_parameters(
+                recipient.values, header_columns, body_columns
+            ),
+        }
+        for recipient in recipients
+    ] if parameter_columns else []
+
+    draft = daemon_request(
+        "/api/v1/campaigns",
+        method="POST",
+        payload={
+            "name": args.name or f"{args.template} {dt.datetime.now(dt.timezone.utc):%Y-%m-%dT%H:%M:%SZ}",
+            "segment": segment,
+            "template": args.template,
+            "language": args.language,
+            "tracked_url": tracked_url,
+            "header_image_url": header_image_url,
+            "params": campaign_params,
+            "recipient_params": recipient_params,
+            "scheduled_at": args.scheduled_at or "",
+            "frequency_messages": args.frequency_messages,
+            "frequency_window": args.frequency_window,
+        },
+    )
+    if not isinstance(draft, dict) or not draft.get("id"):
+        raise SeedhiBaatError(f"the daemon did not return a draft campaign: {draft}")
+    campaign_id = str(draft["id"])
+    frozen = int(draft.get("audience_count", 0))
+    print()
+    print(f"Draft campaign: {campaign_id}")
+    print(f"Frozen recipients: {frozen}")
+    print(f"Recipients with their own values: {draft.get('recipients_with_parameters', 0)}")
+    moot = int(draft.get("recipient_parameters_not_in_audience", 0))
+    if moot:
+        print(
+            f"{moot} CSV row(s) carry values for a recipient who is not in the audience. "
+            "Nothing is sent to them, so those values are unused."
+        )
+    _report_audience_gap(len(phones), frozen)
+    if frozen == 0:
+        print("Nothing to send. The draft stays unactivated.")
+        return 1
 
     if not args.yes:
         if not sys.stdin.isatty():
-            raise SeedhiBaatError("non-interactive live sends require --send --yes")
-        unique_recipient_count = len({recipient.phone for recipient in recipients})
+            raise SeedhiBaatError("non-interactive activation requires --send --yes")
         confirmation = input(
-            f"Send {len(recipients)} messages to {unique_recipient_count} recipients? Type SEND: "
+            f"Activate {campaign_id}: template {args.template} ({args.language}), "
+            f"MARKETING, to {frozen} recipients? Type SEND: "
         )
         if confirmation != "SEND":
-            print("Cancelled.")
+            print(f"Cancelled. Draft {campaign_id} was left unactivated.")
             return 1
 
-    # Every message must be traceable, so refuse to send when the daemon that
-    # owns the ledger cannot be reached. Overriding this is deliberate and
-    # leaves the run needing `ledger sync`.
-    record_to_daemon = True
-    if not daemon_reachable():
-        raise SeedhiBaatError(
-            "daemon is unreachable, so these sends could not be recorded or attributed. "
-            "Start the daemon or point SEEDHIBAAT_OPERATOR_URL at it. There is no "
-            "untracked send path: money spent must leave a record."
+    activated = daemon_request(
+        f"/api/v1/campaigns/{urllib.parse.quote(campaign_id, safe='')}/activate",
+        method="POST",
+        payload={
+            "confirmed_recipient_count": frozen,
+            "name": "",
+            "segment": {"kind": "not_reordered", "require_whatsapp_consent": True},
+            "template": "",
+            "language": "",
+        },
+    )
+    print(json.dumps(activated, indent=2))
+    print(
+        "Queued in the daemon. Messages are accounted for before Meta is called; "
+        f"follow them with: seedhibaat campaign show --campaign-id {campaign_id}"
+    )
+    return 0
+
+
+def _report_audience_gap(csv_rows: int, eligible: int) -> None:
+    """Say plainly how many CSV rows the daemon will not send to.
+
+    A number the daemon cannot match, cannot send to, or has no consent for is
+    silently dropped from the audience. That gap must never be a surprise.
+    """
+    missing = csv_rows - eligible
+    if missing > 0:
+        print(
+            f"{missing} of {csv_rows} CSV row(s) are not in the audience. They have no "
+            "customer record, no WhatsApp consent, or are suppressed or invalid. "
+            "Import them first with: seedhibaat customers import --csv <file> --confirm"
         )
-    unrecorded = 0
-    unknown_recipients = 0
-
-    env = require_env()
-    root = Path.cwd()
-    ledger_path = root / "state" / "sends.ndjson"
-    sent_keys = load_sent_keys(ledger_path)
-    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_path = root / "runs" / f"{timestamp}.ndjson"
-    accepted = failed = skipped = 0
-
-    for recipient in recipients:
-        components = build_template_components(
-            recipient.values,
-            header_columns,
-            body_columns,
-            url_button_bindings,
-            header_image_url,
-        )
-        key = idempotency_key(
-            recipient.phone, args.template, args.language, components
-        )
-        base: dict[str, object] = {
-            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "phone": f"+{recipient.phone}",
-            "template": args.template,
-            "language": args.language,
-            "category": args.category,
-            "idempotency_key": key,
-        }
-        if components:
-            base["parameter_fingerprint"] = parameter_fingerprint(components)
-        if args.allow_resend:
-            # A deliberate resend is its own message and must be accounted for
-            # separately, not merged into the original send's record.
-            key = key + ":resend:" + str(base["timestamp"])
-            base["idempotency_key"] = key
-        elif key in sent_keys:
-            record = {**base, "status": "skipped_duplicate"}
-            append_jsonl(run_path, record)
-            skipped += 1
-            continue
-
-        # Account for the message before spending money on it. The daemon
-        # refuses a recipient it cannot record, and a refusal means no send.
-        reservation = reserve_message(base)
-        if reservation is None:
-            record = {**base, "status": "not_sent", "error": "daemon did not reserve the message"}
-            append_jsonl(run_path, record)
-            unrecorded += 1
-            continue
-        if not reservation.get("reserved"):
-            reason = str(reservation.get("reason", "refused"))
-            record = {**base, "status": "not_sent", "error": reason}
-            append_jsonl(run_path, record)
-            if reason == "unknown_recipient":
-                unknown_recipients += 1
-            else:
-                skipped += 1
-            continue
-
-        try:
-            message_id = send_template(
-                phone=recipient.phone,
-                template=args.template,
-                language=args.language,
-                components=components,
-                env=env,
-                timeout=args.timeout,
-            )
-            record = {**base, "status": "accepted", "message_id": message_id}
-            append_jsonl(ledger_path, record)
-            sent_keys.add(key)
-            accepted += 1
-        except (SeedhiBaatError, OSError) as exc:
-            # OSError covers socket timeouts, which send_template does not wrap;
-            # letting one escape would abort the run after Meta may already have
-            # accepted the message.
-            record = {**base, "status": "failed", "error": str(exc)}
-            append_jsonl(ledger_path, record)
-            failed += 1
-        # Settle the reservation. If this fails the reserved row stays in the
-        # daemon as an unreconciled send, and `ledger sync` closes it.
-        if record_message(record, category=args.category) is None:
-            unrecorded += 1
-        append_jsonl(run_path, record)
-
-    print(f"Accepted: {accepted}; failed: {failed}; skipped duplicates: {skipped}")
-    if record_to_daemon:
-        print(f"Recorded in the daemon ledger: {accepted + failed - unrecorded} of {accepted + failed}")
-        if unrecorded:
-            print(
-                f"WARNING: {unrecorded} message(s) are not in the daemon ledger. "
-                "They will not appear in reporting or attribute revenue until you run: "
-                "seedhibaat ledger sync"
-            )
-        if unknown_recipients:
-            print(
-                f"{unknown_recipients} recipient(s) have no customer record. Nothing was sent to "
-                "them, because the send could not be accounted for. Import them first with: "
-                "seedhibaat customers import --csv <file> --confirm"
-            )
-    print(f"Run log: {run_path}")
-    return 1 if failed else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="seedhibaat")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    send = subparsers.add_parser("send", help="validate or send a CSV recipient list")
+    send = subparsers.add_parser(
+        "send", help="draft a campaign from a CSV recipient list and activate it"
+    )
     send.add_argument("--csv", type=Path, required=True)
     send.add_argument("--phone-column", default="phone")
     send.add_argument(
@@ -578,14 +418,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send.add_argument("--template", required=True)
     send.add_argument("--language", default="en_US")
-    send.add_argument(
-        "--category",
-        default="MARKETING",
-        help="template category recorded in the daemon ledger",
-    )
+    send.add_argument("--name", help="campaign name; defaults to the template and the time")
     send.add_argument(
         "--header-image-url",
         help="public HTTPS JPEG or PNG supplied to an approved IMAGE header",
+    )
+    send.add_argument(
+        "--tracked-url",
+        help="HTTPS destination behind the template's dynamic URL button; the daemon "
+        "issues one signed token per message and counts the clicks",
     )
     send.add_argument(
         "--header-param",
@@ -599,17 +440,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CSV_COLUMN",
         help="map a CSV column to the next text body parameter; repeat in template order",
     )
+    send.add_argument("--scheduled-at", help="RFC3339 time to queue the messages for")
+    send.add_argument("--frequency-messages", type=int, default=1)
+    send.add_argument("--frequency-window", default="24h")
+    send.add_argument("--send", action="store_true", help="create the draft campaign")
     send.add_argument(
-        "--url-button-param",
-        action="append",
-        type=parse_url_button_binding,
-        metavar="INDEX:CSV_COLUMN",
-        help="map a CSV column to a dynamic URL button suffix, for example 0:tracking_token",
+        "--yes", action="store_true", help="confirm activation without the typed prompt"
     )
-    send.add_argument("--send", action="store_true", help="perform a live send")
-    send.add_argument("--yes", action="store_true", help="confirm a non-interactive live send")
-    send.add_argument("--allow-resend", action="store_true")
-    send.add_argument("--timeout", type=float, default=30.0)
     send.set_defaults(func=run_send)
 
     ledger = subparsers.add_parser("ledger", help="reconcile the local send ledger with the daemon")

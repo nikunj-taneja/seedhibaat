@@ -357,12 +357,24 @@ PYTHONPATH=src python3 -m seedhibaat send \
   --language en_US \
   --header-image-url https://wa.example.com/media/example-header.jpg \
   --body-param customer_name \
-  --url-button-param 0:tracking_token
+  --tracked-url https://shop.example.com/products/example
 ```
 
-The command above is a dry run. A live send requires the identical reviewed
-command plus `--send --yes`. The append-only ledger prevents identical repeats;
-`--allow-resend` always requires separate approval.
+The CLI never calls Meta. It turns the CSV into a campaign in the daemon, which
+is the only sender: it owns the outbound gate, the consent, suppression and
+invalid-number checks, quiet hours, the frequency cap, and the message ledger.
+
+The command above is a dry run. It previews the audience and writes nothing.
+Adding `--send` creates a draft campaign and prints the frozen recipient count;
+activation then needs a typed `SEND`, or the reviewed command plus `--yes`.
+Rows the daemon cannot send to are reported, never silently dropped.
+
+Each CSV row becomes that recipient's own template values, so a column that
+differs per row -- a coupon code -- reaches only that recipient. A repeat is a
+new campaign with its own approval, not a flag on the old one.
+
+`--tracked-url` supplies the destination behind the template's dynamic URL
+button. The daemon issues one signed token per message and counts the clicks.
 
 CSV phone numbers should use E.164 format. For local-format imports, pass
 `--default-country-code` or set `SEEDHIBAAT_DEFAULT_COUNTRY_CODE` in the

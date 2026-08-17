@@ -496,11 +496,17 @@ func TestPerRecipientTemplateParametersOverrideOnlyTheirOwnSlot(t *testing.T) {
 	if response := create(`{"name":"extra slot",` + segmentJSON + `,"template":"approved","language":"en_US",` + campaignParams + `,"recipient_params":[{"customer_shopify_id":"gid://shopify/Customer/1","params":{"body.2":"literal:EXTRA"}}]}`); response.Code != http.StatusBadRequest {
 		t.Fatalf("a recipient added a parameter slot: code=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := create(`{"name":"outsider",` + segmentJSON + `,"template":"approved","language":"en_US",` + campaignParams + `,"recipient_params":[{"customer_shopify_id":"gid://shopify/Customer/absent","params":{"body.1":"literal:X"}}]}`); response.Code != http.StatusBadRequest {
-		t.Fatalf("an unknown recipient was accepted: code=%d body=%s", response.Code, response.Body.String())
+	// A recipient outside the audience receives nothing, so their values are
+	// moot rather than an error. The count says so instead of staying silent.
+	response := create(`{"name":"outsider",` + segmentJSON + `,"template":"approved","language":"en_US",` + campaignParams + `,"recipient_params":[{"customer_shopify_id":"gid://shopify/Customer/absent","params":{"body.1":"literal:X"}}]}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("an unmatched recipient broke the draft: code=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"recipient_parameters_not_in_audience":1`) {
+		t.Fatalf("the unmatched recipient was not reported: %s", response.Body.String())
 	}
 
-	response := create(`{"name":"coupons",` + segmentJSON + `,"template":"approved","language":"en_US",` + campaignParams + `,"recipient_params":[{"customer_shopify_id":"gid://shopify/Customer/2","params":{"body.1":"literal:OWN-CODE"}}]}`)
+	response = create(`{"name":"coupons",` + segmentJSON + `,"template":"approved","language":"en_US",` + campaignParams + `,"recipient_params":[{"customer_shopify_id":"gid://shopify/Customer/2","params":{"body.1":"literal:OWN-CODE"}}]}`)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create code=%d body=%s", response.Code, response.Body.String())
 	}

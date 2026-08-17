@@ -7,20 +7,27 @@ below apply those rules; they do not override them.
 
 ### CSV sends
 
-1. Obtain the CSV path, approved template name and language, and ordered
-   header/body/URL-button mappings.
+`seedhibaat send` creates a campaign in the daemon. The CLI has no send path of
+its own, so every message passes the daemon's gates and enters its ledger.
+
+1. Obtain the CSV path, approved template name and language, the ordered
+   header/body column mappings, and the tracked destination if the template has
+   a dynamic URL button.
 2. Inspect only the header and row count, then run `seedhibaat send` without
-   `--send`.
-3. Report the exact template, validated message count, and unique valid
-   recipient count. Stop on any validation error.
-4. Require explicit approval for that exact template and both counts. Only
-   then run the identical command with `--send --yes`.
-5. Report accepted, failed, and duplicate-skipped counts. API acceptance is
-   not evidence of delivery.
+   `--send`. This previews the audience and writes nothing.
+3. Report the exact template, validated message count, unique valid recipient
+   count, and how many CSV rows fall outside the audience. Stop on any
+   validation error.
+4. Require explicit approval for that exact template and those counts. Only
+   then run the identical command with `--send`, which drafts the campaign.
+5. Compare the daemon's frozen recipient count with the approved count before
+   typing `SEND`. They must match.
+6. Report the activation result. Queueing is not acceptance, and API acceptance
+   is not evidence of delivery. Follow the campaign with
+   `seedhibaat campaign show`.
 
 The owner-designated test number is supplied out of band and must never enter
-tracked files or fixtures. Every repeat requires separate approval and
-`--allow-resend` must never be inferred.
+tracked files or fixtures. A repeat is a new campaign with its own approval.
 
 ### Templates
 
@@ -207,7 +214,7 @@ do not place it literally in shell history.
   file, and restart.
 - Queue anomaly: pause the workflow/campaign; do not delete the database or
   ledger. Inspect aggregate state and audit history first.
-- Suspected duplicate: do not use `--allow-resend`; reconcile Meta message IDs
-  and webhook events before any manual replay.
+- Suspected duplicate: reconcile Meta message IDs and webhook events before any
+  manual replay. There is no resend flag; a repeat is a new campaign.
 - A failed job can be replayed with `seedhibaat job replay ID --replay --yes`.
   Unknown or possibly accepted provider states are deliberately not replayable.

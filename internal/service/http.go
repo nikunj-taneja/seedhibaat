@@ -548,8 +548,12 @@ type campaignRequest struct {
 // recipientParams carries the template values that differ from one recipient to
 // the next. Its keys must already exist in the campaign's own parameter map, so
 // a recipient can change what a slot says but never how many slots there are.
+// The recipient is named by exactly one of CustomerShopifyID or Phone. Phone is
+// plaintext at the API boundary only: the daemon hashes it and never stores it,
+// the same way it handles a frozen_phones segment.
 type recipientParams struct {
-	CustomerShopifyID string            `json:"customer_shopify_id"`
+	CustomerShopifyID string            `json:"customer_shopify_id,omitempty"`
+	Phone             string            `json:"phone,omitempty"`
 	Params            map[string]string `json:"params"`
 }
 
@@ -570,12 +574,18 @@ func mergeTemplateParams(campaign, recipient map[string]string) map[string]strin
 }
 
 // resolveRecipientParams maps each entry onto an internal customer ID and
-// rejects anything that would change the approved render contract: an unknown
-// recipient, a recipient outside the frozen audience, a duplicate, a parameter
-// slot the campaign does not define, or a merged map that no longer renders.
-func (s *HTTPServer) resolveRecipientParams(ctx context.Context, entries []recipientParams, campaignParams map[string]string, audience []int64) (map[int64]map[string]string, error) {
+// rejects anything that would change the approved render contract: a duplicate,
+// a parameter slot the campaign does not define, or a merged map that no longer
+// renders.
+//
+// An entry naming a recipient who is not in the frozen audience is counted as
+// moot rather than refused. That recipient receives nothing, so their values
+// cannot reach a message; refusing instead would break every real audience,
+// where some rows have no customer record, no consent, or are suppressed. The
+// count is returned so the operator sees the gap before approving.
+func (s *HTTPServer) resolveRecipientParams(ctx context.Context, entries []recipientParams, campaignParams map[string]string, audience []int64) (map[int64]map[string]string, int, error) {
 	if len(entries) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 	eligible := make(map[int64]struct{}, len(audience))
 	for _, customerID := range audience {
@@ -583,39 +593,54 @@ func (s *HTTPServer) resolveRecipientParams(ctx context.Context, entries []recip
 	}
 	resolved := make(map[int64]map[string]string, len(entries))
 	seen := make(map[string]struct{}, len(entries))
+	moot := 0
 	for _, entry := range entries {
-		if entry.CustomerShopifyID == "" {
-			return nil, errors.New("recipient_params entries require customer_shopify_id")
+		if (entry.CustomerShopifyID == "") == (entry.Phone == "") {
+			return nil, 0, errors.New("recipient_params entries name a recipient by customer_shopify_id or phone, not both")
 		}
 		if len(entry.Params) == 0 {
-			return nil, errors.New("recipient_params entries require params")
+			return nil, 0, errors.New("recipient_params entries require params")
 		}
-		if _, exists := seen[entry.CustomerShopifyID]; exists {
-			return nil, errors.New("recipient_params contains a duplicate customer")
+		identity := entry.CustomerShopifyID
+		if entry.Phone != "" {
+			digits := normalizePhone(entry.Phone, s.Config.DefaultCountryCode)
+			if digits == "" {
+				return nil, 0, errors.New("recipient_params contains a phone with no digits")
+			}
+			identity = "phone:" + security.KeyedHash(s.Config.PIIHashKey, digits)
 		}
-		seen[entry.CustomerShopifyID] = struct{}{}
+		if _, exists := seen[identity]; exists {
+			return nil, 0, errors.New("recipient_params contains a duplicate recipient")
+		}
+		seen[identity] = struct{}{}
 		for key := range entry.Params {
 			if _, defined := campaignParams[key]; !defined {
-				return nil, fmt.Errorf("recipient_params key %q is not a campaign template parameter", key)
+				return nil, 0, fmt.Errorf("recipient_params key %q is not a campaign template parameter", key)
 			}
 		}
 		merged := mergeTemplateParams(campaignParams, entry.Params)
 		if _, err := workflow.OrderedParameterBindings(merged, "header"); err != nil {
-			return nil, fmt.Errorf("recipient header parameters are invalid: %w", err)
+			return nil, 0, fmt.Errorf("recipient header parameters are invalid: %w", err)
 		}
 		if _, err := workflow.OrderedParameterBindings(merged, "body"); err != nil {
-			return nil, fmt.Errorf("recipient body parameters are invalid: %w", err)
+			return nil, 0, fmt.Errorf("recipient body parameters are invalid: %w", err)
 		}
 		var customerID int64
-		if err := s.Store.DB.QueryRowContext(ctx, `SELECT id FROM customers WHERE shopify_id=?`, entry.CustomerShopifyID).Scan(&customerID); err != nil {
-			return nil, errors.New("recipient_params names a customer that does not exist")
+		query, lookup := `SELECT id FROM customers WHERE shopify_id=?`, entry.CustomerShopifyID
+		if entry.Phone != "" {
+			query, lookup = `SELECT id FROM customers WHERE phone_hash=?`, strings.TrimPrefix(identity, "phone:")
+		}
+		if err := s.Store.DB.QueryRowContext(ctx, query, lookup).Scan(&customerID); err != nil {
+			moot++
+			continue
 		}
 		if _, ok := eligible[customerID]; !ok {
-			return nil, errors.New("recipient_params names a customer outside the frozen audience")
+			moot++
+			continue
 		}
 		resolved[customerID] = entry.Params
 	}
-	return resolved, nil
+	return resolved, moot, nil
 }
 
 // hashSegmentPhones converts the plaintext numbers a caller supplies into the
@@ -719,7 +744,7 @@ func (s *HTTPServer) createCampaign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	perRecipient, err := s.resolveRecipientParams(r.Context(), request.RecipientParams, request.Params, result.CustomerIDs)
+	perRecipient, mootRecipientParams, err := s.resolveRecipientParams(r.Context(), request.RecipientParams, request.Params, result.CustomerIDs)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -745,9 +770,9 @@ func (s *HTTPServer) createCampaign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	details, _ := json.Marshal(map[string]any{"audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "recipients_with_parameters": len(perRecipient)})
+	details, _ := json.Marshal(map[string]any{"audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "recipients_with_parameters": len(perRecipient), "recipient_parameters_not_in_audience": mootRecipientParams})
 	_ = s.Store.Audit(r.Context(), "operator", "campaign.create", "campaign", id, string(details))
-	writeJSON(w, 201, map[string]any{"id": id, "state": "draft", "audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "frequency_messages": request.FrequencyMessages, "frequency_window": request.FrequencyWindow, "recipients_with_parameters": len(perRecipient)})
+	writeJSON(w, 201, map[string]any{"id": id, "state": "draft", "audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "frequency_messages": request.FrequencyMessages, "frequency_window": request.FrequencyWindow, "recipients_with_parameters": len(perRecipient), "recipient_parameters_not_in_audience": mootRecipientParams})
 }
 func (s *HTTPServer) getCampaign(w http.ResponseWriter, r *http.Request) {
 	var id, name, segmentJSON, exclusionsJSON, template, language, state, created string

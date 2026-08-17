@@ -9,16 +9,13 @@ from unittest.mock import patch
 
 from seedhibaat.cli import (
     SeedhiBaatError,
-    build_template_components,
-    idempotency_key,
+    build_parser,
+    build_template_parameters,
     main,
     normalize_phone,
     read_recipient_rows,
-    build_parser,
     read_recipients,
     record_message,
-    require_env,
-    send_template,
 )
 
 
@@ -76,160 +73,132 @@ class CsvTests(unittest.TestCase):
 
 
 class ParameterTests(unittest.TestCase):
-    def test_builds_header_body_and_dynamic_url_components(self):
-        components = build_template_components(
-            {
-                "customer": "Asha",
-                "order_id": "A-1",
-                "tracking_token": "signed-token",
-            },
+    def test_maps_csv_columns_onto_ordered_daemon_parameter_slots(self):
+        parameters = build_template_parameters(
+            {"customer": "Asha", "order_id": "A-1", "delivered_on": "Monday"},
             ["customer"],
-            ["order_id"],
-            [(0, "tracking_token")],
+            ["order_id", "delivered_on"],
         )
         self.assertEqual(
-            components,
-            [
-                {"type": "header", "parameters": [{"type": "text", "text": "Asha"}]},
-                {"type": "body", "parameters": [{"type": "text", "text": "A-1"}]},
-                {
-                    "type": "button",
-                    "sub_type": "url",
-                    "index": "0",
-                    "parameters": [{"type": "text", "text": "signed-token"}],
-                },
-            ],
+            parameters,
+            {
+                "header.1": "literal:Asha",
+                "body.1": "literal:A-1",
+                "body.2": "literal:Monday",
+            },
         )
 
-    def test_builds_image_header_before_body_parameters(self):
-        components = build_template_components(
-            {"price": "750"},
-            [],
-            ["price"],
-            [],
-            "https://cdn.example.com/header.jpg",
-        )
-        self.assertEqual(
-            components,
-            [
-                {
-                    "type": "header",
-                    "parameters": [
-                        {
-                            "type": "image",
-                            "image": {
-                                "link": "https://cdn.example.com/header.jpg"
-                            },
-                        }
-                    ],
-                },
-                {
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": "750"}],
-                },
-            ],
-        )
-
-    def test_send_payload_includes_rendered_components(self):
-        components = [
-            {"type": "body", "parameters": [{"type": "text", "text": "A-1"}]}
-        ]
-        response = io.BytesIO(b'{"messages":[{"id":"wamid.1"}]}')
-        with patch("urllib.request.urlopen", return_value=response) as urlopen:
-            message_id = send_template(
-                phone="919876543210",
-                template="order_update",
-                language="en_US",
-                components=components,
-                env={
-                    "META_SYSTEM_USER_TOKEN": "not-a-real-token",
-                    "META_GRAPH_API_VERSION": "v23.0",
-                    "WHATSAPP_PHONE_NUMBER_ID": "123",
-                },
-                timeout=30.0,
-            )
-        self.assertEqual(message_id, "wamid.1")
-        request = urlopen.call_args.args[0]
-        payload = json.loads(request.data)
-        self.assertEqual(payload["template"]["components"], components)
+    def test_a_template_without_parameters_maps_to_an_empty_slot_map(self):
+        self.assertEqual(build_template_parameters({}, [], []), {})
 
 
 class SafetyTests(unittest.TestCase):
-    def test_dry_run_does_not_require_credentials(self):
+    def test_dry_run_previews_the_segment_and_creates_nothing(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "recipients.csv"
             path.write_text("phone\n9876543210\n", encoding="utf-8")
-            with patch.dict(os.environ, {}, clear=True):
-                self.assertEqual(
-                    main(["send", "--csv", str(path), "--template", "order_update"]),
-                    0,
-                )
+            stdout = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch(
+                    "seedhibaat.cli.daemon_request", return_value={"eligible_count": 1}
+                ) as request:
+                    with patch("sys.stdout", stdout):
+                        self.assertEqual(
+                            main(
+                                [
+                                    "send",
+                                    "--csv",
+                                    str(path),
+                                    "--template",
+                                    "order_update",
+                                    "--default-country-code",
+                                    "91",
+                                ]
+                            ),
+                            0,
+                        )
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(request.call_args.args[0], "/api/v1/segments/preview")
+            self.assertIn("Nothing was created", stdout.getvalue())
 
-    def test_live_configuration_requires_every_identity_value(self):
-        with patch.dict(os.environ, {"META_APP_ID": "123"}, clear=True):
-            with self.assertRaisesRegex(SeedhiBaatError, "META_SYSTEM_USER_TOKEN"):
-                require_env()
-
-    def test_idempotency_key_changes_with_template(self):
-        first = idempotency_key("919876543210", "order_update", "en_US")
-        second = idempotency_key("919876543210", "shipping_update", "en_US")
-        self.assertNotEqual(first, second)
-
-    def test_idempotency_key_changes_with_rendered_parameters(self):
-        first = idempotency_key(
-            "919876543210",
-            "order_update",
-            "en_US",
-            [{"type": "body", "parameters": [{"type": "text", "text": "A-1"}]}],
-        )
-        second = idempotency_key(
-            "919876543210",
-            "order_update",
-            "en_US",
-            [{"type": "body", "parameters": [{"type": "text", "text": "A-2"}]}],
-        )
-        self.assertNotEqual(first, second)
-
-    def test_parameterized_dry_run_does_not_require_credentials(self):
+    def test_dry_run_names_how_many_rows_fall_outside_the_audience(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "recipients.csv"
             path.write_text(
-                "phone,order_id,tracking_token\n9876543210,A-1,signed-token\n",
-                encoding="utf-8",
+                "phone\n9876543210\n9876543211\n9876543212\n", encoding="utf-8"
             )
-            with patch.dict(os.environ, {}, clear=True):
-                self.assertEqual(
-                    main(
-                        [
-                            "send",
-                            "--csv",
-                            str(path),
-                            "--template",
-                            "order_update",
-                            "--body-param",
-                            "order_id",
-                            "--url-button-param",
-                            "0:tracking_token",
-                        ]
-                    ),
-                    0,
-                )
+            stdout = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch(
+                    "seedhibaat.cli.daemon_request", return_value={"eligible_count": 1}
+                ):
+                    with patch("sys.stdout", stdout):
+                        main(
+                            [
+                                "send",
+                                "--csv",
+                                str(path),
+                                "--template",
+                                "order_update",
+                                "--default-country-code",
+                                "91",
+                            ]
+                        )
+            self.assertIn("2 of 3 CSV row(s) are not in the audience", stdout.getvalue())
 
-    def test_rejects_duplicate_url_button_indexes(self):
+    def test_the_segment_carries_plaintext_numbers_and_never_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recipients.csv"
+            path.write_text("phone\n9876543210\n", encoding="utf-8")
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch(
+                    "seedhibaat.cli.daemon_request", return_value={"eligible_count": 1}
+                ) as request:
+                    with patch("sys.stdout", io.StringIO()):
+                        main(
+                            [
+                                "send",
+                                "--csv",
+                                str(path),
+                                "--template",
+                                "order_update",
+                                "--default-country-code",
+                                "91",
+                            ]
+                        )
+            payload = request.call_args.kwargs["payload"]
+            self.assertEqual(payload["kind"], "frozen_phones")
+            self.assertTrue(payload["require_whatsapp_consent"])
+            self.assertEqual(payload["phones"], ["919876543210"])
+
+    def test_rejects_one_number_that_carries_two_sets_of_values(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "recipients.csv"
             path.write_text(
-                "phone,first,second\n9876543210,a,b\n",
-                encoding="utf-8",
+                "phone,order_id\n9876543210,A-1\n9876543210,A-2\n", encoding="utf-8"
             )
+            stderr = io.StringIO()
+            with patch("sys.stderr", stderr):
+                code = main(
+                    [
+                        "send",
+                        "--csv",
+                        str(path),
+                        "--template",
+                        "order_update",
+                        "--body-param",
+                        "order_id",
+                        "--default-country-code",
+                        "91",
+                    ]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("more than one CSV row", stderr.getvalue())
 
     def test_rejects_insecure_or_conflicting_image_header(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "recipients.csv"
-            path.write_text(
-                "phone,name\n9876543210,Asha\n",
-                encoding="utf-8",
-            )
+            path.write_text("phone,name\n9876543210,Asha\n", encoding="utf-8")
             self.assertEqual(
                 main(
                     [
@@ -260,22 +229,6 @@ class SafetyTests(unittest.TestCase):
                 ),
                 2,
             )
-            self.assertEqual(
-                main(
-                    [
-                        "send",
-                        "--csv",
-                        str(path),
-                        "--template",
-                        "order_update",
-                        "--url-button-param",
-                        "0:first",
-                        "--url-button-param",
-                        "0:second",
-                    ]
-                ),
-                2,
-            )
 
 
 if __name__ == "__main__":
@@ -288,13 +241,13 @@ class LedgerTraceabilityTests(unittest.TestCase):
         path.write_text("phone\n9876543210\n", encoding="utf-8")
         return path
 
-    def test_live_send_refuses_when_the_daemon_cannot_record_it(self):
+    def test_a_send_refuses_when_the_daemon_is_unreachable(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._csv(directory)
             stderr = io.StringIO()
             with patch("seedhibaat.cli.daemon_reachable", return_value=False):
-                with patch("sys.stderr", stderr):
-                    with patch("seedhibaat.cli.send_template") as send:
+                with patch("seedhibaat.cli.daemon_request") as request:
+                    with patch("sys.stderr", stderr):
                         code = main(
                             [
                                 "send",
@@ -309,17 +262,19 @@ class LedgerTraceabilityTests(unittest.TestCase):
                             ]
                         )
             self.assertEqual(code, 2)
-            self.assertIn("could not be recorded", stderr.getvalue())
-            send.assert_not_called()
+            self.assertIn("no send path of its own", stderr.getvalue())
+            request.assert_not_called()
 
-    def test_dry_run_does_not_need_the_daemon(self):
+    def test_a_dry_run_also_needs_the_daemon_to_freeze_the_audience(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._csv(directory)
-            with patch("seedhibaat.cli.daemon_reachable", return_value=False) as reachable:
-                self.assertEqual(
-                    main(["send", "--csv", str(path), "--template", "order_update"]), 0
-                )
-            reachable.assert_not_called()
+            stderr = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=False):
+                with patch("sys.stderr", stderr):
+                    self.assertEqual(
+                        main(["send", "--csv", str(path), "--template", "order_update"]), 2
+                    )
+            self.assertIn("audience cannot be frozen", stderr.getvalue())
 
     def test_record_message_maps_a_failure_code_from_the_meta_error(self):
         record = {
@@ -470,79 +425,116 @@ class LedgerTraceabilityTests(unittest.TestCase):
             record_message(record, category="MARKETING")
         self.assertEqual(request.call_args.kwargs["payload"]["category"], "UTILITY")
 
-    def test_there_is_no_flag_to_send_without_recording(self):
+    def test_the_cli_offers_no_way_to_send_outside_the_daemon(self):
         parser = build_parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args(
-                ["send", "--csv", "x.csv", "--template", "t", "--skip-daemon-ledger"]
-            )
+        for flag in ("--skip-daemon-ledger", "--url-button-param", "--allow-resend"):
+            with self.subTest(flag=flag):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args(
+                        ["send", "--csv", "x.csv", "--template", "t", flag, "0:c"]
+                    )
 
-    def test_no_message_is_sent_when_the_daemon_will_not_account_for_it(self):
+    def test_a_campaign_is_drafted_and_then_activated_at_the_frozen_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recipients.csv"
+            path.write_text(
+                "phone,coupon\n9876543210,SAVE-A\n9876543211,SAVE-B\n", encoding="utf-8"
+            )
+            calls = []
+
+            def request(endpoint, method="GET", payload=None):
+                calls.append((endpoint, payload))
+                if endpoint == "/api/v1/campaigns":
+                    return {
+                        "id": "campaign_1",
+                        "audience_count": 2,
+                        "recipients_with_parameters": 2,
+                    }
+                return {"id": "campaign_1", "state": "scheduled", "recipient_count": 2}
+
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch("seedhibaat.cli.daemon_request", side_effect=request):
+                    with patch("sys.stdout", io.StringIO()):
+                        self.assertEqual(
+                            main(
+                                [
+                                    "send",
+                                    "--csv",
+                                    str(path),
+                                    "--template",
+                                    "order_update",
+                                    "--body-param",
+                                    "coupon",
+                                    "--default-country-code",
+                                    "91",
+                                    "--send",
+                                    "--yes",
+                                ]
+                            ),
+                            0,
+                        )
+            self.assertEqual(
+                [endpoint for endpoint, _ in calls],
+                ["/api/v1/campaigns", "/api/v1/campaigns/campaign_1/activate"],
+            )
+            draft = calls[0][1]
+            self.assertEqual(
+                draft["recipient_params"],
+                [
+                    {"phone": "919876543210", "params": {"body.1": "literal:SAVE-A"}},
+                    {"phone": "919876543211", "params": {"body.1": "literal:SAVE-B"}},
+                ],
+            )
+            self.assertEqual(calls[1][1]["confirmed_recipient_count"], 2)
+
+    def test_a_draft_with_no_eligible_recipient_is_never_activated(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._csv(directory)
+            calls = []
+
+            def request(endpoint, method="GET", payload=None):
+                calls.append(endpoint)
+                return {"id": "campaign_1", "audience_count": 0}
+
             stdout = io.StringIO()
             with patch("seedhibaat.cli.daemon_reachable", return_value=True):
-                with patch("seedhibaat.cli.require_env", return_value={}):
-                    with patch(
-                        "seedhibaat.cli.reserve_message",
-                        return_value={"reserved": False, "reason": "unknown_recipient"},
-                    ):
-                        with patch("seedhibaat.cli.send_template") as send:
+                with patch("seedhibaat.cli.daemon_request", side_effect=request):
+                    with patch("sys.stdout", stdout):
+                        self.assertEqual(
+                            main(
+                                [
+                                    "send",
+                                    "--csv",
+                                    str(path),
+                                    "--template",
+                                    "order_update",
+                                    "--default-country-code",
+                                    "91",
+                                    "--send",
+                                    "--yes",
+                                ]
+                            ),
+                            1,
+                        )
+            self.assertEqual(calls, ["/api/v1/campaigns"])
+            self.assertIn("Nothing to send", stdout.getvalue())
+
+    def test_activation_without_yes_needs_a_typed_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._csv(directory)
+            calls = []
+
+            def request(endpoint, method="GET", payload=None):
+                calls.append(endpoint)
+                return {"id": "campaign_1", "audience_count": 1}
+
+            stdout = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch("seedhibaat.cli.daemon_request", side_effect=request):
+                    with patch("sys.stdin.isatty", return_value=True):
+                        with patch("builtins.input", return_value="yes"):
                             with patch("sys.stdout", stdout):
-                                main(
-                                    [
-                                        "send",
-                                        "--csv",
-                                        str(path),
-                                        "--template",
-                                        "order_update",
-                                        "--default-country-code",
-                                        "91",
-                                        "--send",
-                                        "--yes",
-                                    ]
-                                )
-            send.assert_not_called()
-            self.assertIn("no customer record", stdout.getvalue())
-
-    def test_nothing_is_sent_when_the_reservation_call_fails(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = self._csv(directory)
-            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
-                with patch("seedhibaat.cli.require_env", return_value={}):
-                    with patch("seedhibaat.cli.reserve_message", return_value=None):
-                        with patch("seedhibaat.cli.send_template") as send:
-                            with patch("sys.stdout", io.StringIO()):
-                                main(
-                                    [
-                                        "send",
-                                        "--csv",
-                                        str(path),
-                                        "--template",
-                                        "order_update",
-                                        "--default-country-code",
-                                        "91",
-                                        "--send",
-                                        "--yes",
-                                    ]
-                                )
-            send.assert_not_called()
-
-    def test_a_resend_is_accounted_for_separately(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = self._csv(directory)
-            reserved = []
-
-            def reserve(base):
-                reserved.append(str(base["idempotency_key"]))
-                return {"reserved": True, "message_id": "msg_1"}
-
-            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
-                with patch("seedhibaat.cli.require_env", return_value={}):
-                    with patch("seedhibaat.cli.reserve_message", side_effect=reserve):
-                        with patch("seedhibaat.cli.send_template", return_value="wamid.1"):
-                            with patch("seedhibaat.cli.record_message", return_value={"recorded": True}):
-                                with patch("sys.stdout", io.StringIO()):
+                                self.assertEqual(
                                     main(
                                         [
                                             "send",
@@ -553,9 +545,9 @@ class LedgerTraceabilityTests(unittest.TestCase):
                                             "--default-country-code",
                                             "91",
                                             "--send",
-                                            "--yes",
-                                            "--allow-resend",
                                         ]
-                                    )
-            self.assertEqual(len(reserved), 1)
-            self.assertIn(":resend:", reserved[0])
+                                    ),
+                                    1,
+                                )
+            self.assertEqual(calls, ["/api/v1/campaigns"])
+            self.assertIn("left unactivated", stdout.getvalue())

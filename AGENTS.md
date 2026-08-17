@@ -34,8 +34,11 @@ optional read-only aggregate metrics dashboard.
   original intended send, including media, parameters, button URL shape, and
   tracked destination. Reconcile and repair pre-acceptance failed payloads
   before replay; never infer missing fields from the template name alone.
-- Never add `--send --yes`, `--submit --yes`, campaign activation, production
-  workflow activation, or `--allow-resend` based on implied intent.
+- Never add `--send --yes`, `--submit --yes`, campaign activation, or
+  production workflow activation based on implied intent.
+- The daemon is the only sender. Never add a path that calls Meta from the CLI,
+  and never add a resend flag: a repeat is a new campaign with its own
+  approval and fresh idempotency keys.
 - Never submit a template to Meta until the exact name, language, category,
   body, buttons, and URL shape have been shown to the user and the user has
   explicitly approved that exact definition for submission.
