@@ -542,6 +542,80 @@ type campaignRequest struct {
 	ConfirmedRecipientCount int                `json:"confirmed_recipient_count,omitempty"`
 	FrequencyMessages       int                `json:"frequency_messages,omitempty"`
 	FrequencyWindow         string             `json:"frequency_window,omitempty"`
+	RecipientParams         []recipientParams  `json:"recipient_params,omitempty"`
+}
+
+// recipientParams carries the template values that differ from one recipient to
+// the next. Its keys must already exist in the campaign's own parameter map, so
+// a recipient can change what a slot says but never how many slots there are.
+type recipientParams struct {
+	CustomerShopifyID string            `json:"customer_shopify_id"`
+	Params            map[string]string `json:"params"`
+}
+
+// mergeTemplateParams returns the campaign parameters with the recipient's
+// values applied on top.
+func mergeTemplateParams(campaign, recipient map[string]string) map[string]string {
+	if len(recipient) == 0 {
+		return campaign
+	}
+	merged := make(map[string]string, len(campaign))
+	for key, value := range campaign {
+		merged[key] = value
+	}
+	for key, value := range recipient {
+		merged[key] = value
+	}
+	return merged
+}
+
+// resolveRecipientParams maps each entry onto an internal customer ID and
+// rejects anything that would change the approved render contract: an unknown
+// recipient, a recipient outside the frozen audience, a duplicate, a parameter
+// slot the campaign does not define, or a merged map that no longer renders.
+func (s *HTTPServer) resolveRecipientParams(ctx context.Context, entries []recipientParams, campaignParams map[string]string, audience []int64) (map[int64]map[string]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	eligible := make(map[int64]struct{}, len(audience))
+	for _, customerID := range audience {
+		eligible[customerID] = struct{}{}
+	}
+	resolved := make(map[int64]map[string]string, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.CustomerShopifyID == "" {
+			return nil, errors.New("recipient_params entries require customer_shopify_id")
+		}
+		if len(entry.Params) == 0 {
+			return nil, errors.New("recipient_params entries require params")
+		}
+		if _, exists := seen[entry.CustomerShopifyID]; exists {
+			return nil, errors.New("recipient_params contains a duplicate customer")
+		}
+		seen[entry.CustomerShopifyID] = struct{}{}
+		for key := range entry.Params {
+			if _, defined := campaignParams[key]; !defined {
+				return nil, fmt.Errorf("recipient_params key %q is not a campaign template parameter", key)
+			}
+		}
+		merged := mergeTemplateParams(campaignParams, entry.Params)
+		if _, err := workflow.OrderedParameterBindings(merged, "header"); err != nil {
+			return nil, fmt.Errorf("recipient header parameters are invalid: %w", err)
+		}
+		if _, err := workflow.OrderedParameterBindings(merged, "body"); err != nil {
+			return nil, fmt.Errorf("recipient body parameters are invalid: %w", err)
+		}
+		var customerID int64
+		if err := s.Store.DB.QueryRowContext(ctx, `SELECT id FROM customers WHERE shopify_id=?`, entry.CustomerShopifyID).Scan(&customerID); err != nil {
+			return nil, errors.New("recipient_params names a customer that does not exist")
+		}
+		if _, ok := eligible[customerID]; !ok {
+			return nil, errors.New("recipient_params names a customer outside the frozen audience")
+		}
+		resolved[customerID] = entry.Params
+	}
+	return resolved, nil
 }
 
 func (s *HTTPServer) segmentPreview(w http.ResponseWriter, r *http.Request) {
@@ -610,6 +684,11 @@ func (s *HTTPServer) createCampaign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	perRecipient, err := s.resolveRecipientParams(r.Context(), request.RecipientParams, request.Params, result.CustomerIDs)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
 	segmentJSON, _ := json.Marshal(request.Segment)
 	paramsJSON, _ := json.Marshal(request.Params)
 	exclusionsJSON, _ := json.Marshal(result.Exclusions)
@@ -620,15 +699,20 @@ func (s *HTTPServer) createCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, customerID := range result.CustomerIDs {
-		_, err = s.Store.DB.ExecContext(r.Context(), `INSERT INTO campaign_recipients(campaign_id,customer_id) VALUES(?,?) ON CONFLICT DO NOTHING`, id, customerID)
+		recipientJSON := "{}"
+		if params, ok := perRecipient[customerID]; ok {
+			encoded, _ := json.Marshal(params)
+			recipientJSON = string(encoded)
+		}
+		_, err = s.Store.DB.ExecContext(r.Context(), `INSERT INTO campaign_recipients(campaign_id,customer_id,template_params_json) VALUES(?,?,?) ON CONFLICT DO NOTHING`, id, customerID, recipientJSON)
 		if err != nil {
 			http.Error(w, "failed", 500)
 			return
 		}
 	}
-	details, _ := json.Marshal(map[string]any{"audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL})
+	details, _ := json.Marshal(map[string]any{"audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "recipients_with_parameters": len(perRecipient)})
 	_ = s.Store.Audit(r.Context(), "operator", "campaign.create", "campaign", id, string(details))
-	writeJSON(w, 201, map[string]any{"id": id, "state": "draft", "audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "frequency_messages": request.FrequencyMessages, "frequency_window": request.FrequencyWindow})
+	writeJSON(w, 201, map[string]any{"id": id, "state": "draft", "audience_count": result.EligibleCount, "segment": request.Segment.Public(), "exclusions": result.Exclusions, "tracked_url": request.TrackedURL, "frequency_messages": request.FrequencyMessages, "frequency_window": request.FrequencyWindow, "recipients_with_parameters": len(perRecipient)})
 }
 func (s *HTTPServer) getCampaign(w http.ResponseWriter, r *http.Request) {
 	var id, name, segmentJSON, exclusionsJSON, template, language, state, created string
@@ -649,7 +733,9 @@ func (s *HTTPServer) getCampaign(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal([]byte(exclusionsJSON), &exclusions)
 	var params map[string]string
 	_ = json.Unmarshal([]byte(paramsJSON), &params)
-	writeJSON(w, 200, map[string]any{"id": id, "name": name, "segment": definition.Public(), "exclusions": exclusions, "template": template, "language": language, "scheduled_at": nullableJSON(scheduled), "state": state, "audience_count": count, "created_at": created, "tracked_url": nullableJSON(trackedURL), "frequency_messages": frequencyMessages, "frequency_window": frequencyWindow, "has_header_image": headerImageURL.Valid, "template_parameter_count": len(params)})
+	var recipientsWithParams int
+	_ = s.Store.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM campaign_recipients WHERE campaign_id=? AND template_params_json NOT IN ('{}','')`, id).Scan(&recipientsWithParams)
+	writeJSON(w, 200, map[string]any{"id": id, "name": name, "segment": definition.Public(), "exclusions": exclusions, "template": template, "language": language, "scheduled_at": nullableJSON(scheduled), "state": state, "audience_count": count, "created_at": created, "tracked_url": nullableJSON(trackedURL), "frequency_messages": frequencyMessages, "frequency_window": frequencyWindow, "has_header_image": headerImageURL.Valid, "template_parameter_count": len(params), "recipients_with_parameters": recipientsWithParams})
 }
 func (s *HTTPServer) activateCampaign(w http.ResponseWriter, r *http.Request) {
 	if !s.Config.ProductionFlowEnabled || !s.Config.OutboundSendingEnabled {
@@ -688,18 +774,29 @@ func (s *HTTPServer) activateCampaign(w http.ResponseWriter, r *http.Request) {
 		}
 		at = parsed
 	}
-	rows, err := s.Store.DB.QueryContext(r.Context(), `SELECT customer_id FROM campaign_recipients WHERE campaign_id=? AND exclusion_reason IS NULL ORDER BY customer_id`, campaignID)
+	rows, err := s.Store.DB.QueryContext(r.Context(), `SELECT customer_id,template_params_json FROM campaign_recipients WHERE campaign_id=? AND exclusion_reason IS NULL ORDER BY customer_id`, campaignID)
 	if err != nil {
 		http.Error(w, "failed", 500)
 		return
 	}
 	var customerIDs []int64
+	recipientParamsByCustomer := map[int64]map[string]string{}
 	for rows.Next() {
 		var customerID int64
-		if rows.Scan(&customerID) != nil {
+		var recipientJSON string
+		if rows.Scan(&customerID, &recipientJSON) != nil {
 			rows.Close()
 			http.Error(w, "failed", 500)
 			return
+		}
+		var params map[string]string
+		if err := json.Unmarshal([]byte(recipientJSON), &params); err != nil {
+			rows.Close()
+			http.Error(w, "stored recipient template parameters are invalid", 500)
+			return
+		}
+		if len(params) > 0 {
+			recipientParamsByCustomer[customerID] = params
 		}
 		customerIDs = append(customerIDs, customerID)
 	}
@@ -734,7 +831,7 @@ func (s *HTTPServer) activateCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, customerID := range customerIDs {
-		payload, _ := json.Marshal(sendPayload{CustomerID: customerID, CampaignID: campaignID, Template: template, Language: language, Category: "MARKETING", TrackedURL: trackedURL.String, HeaderImageURL: headerImageURL.String, Params: params, FrequencyMessages: frequencyMessages, FrequencyWindow: frequencyWindow})
+		payload, _ := json.Marshal(sendPayload{CustomerID: customerID, CampaignID: campaignID, Template: template, Language: language, Category: "MARKETING", TrackedURL: trackedURL.String, HeaderImageURL: headerImageURL.String, Params: mergeTemplateParams(params, recipientParamsByCustomer[customerID]), FrequencyMessages: frequencyMessages, FrequencyWindow: frequencyWindow})
 		jobID := store.NewID("job")
 		result, err := tx.ExecContext(r.Context(), `INSERT INTO scheduled_jobs(id,step_id,idempotency_key,kind,payload,scheduled_at,available_at,max_attempts,created_at,updated_at)
 			VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, jobID, "campaign", "campaign:"+campaignID+":"+fmt.Sprint(customerID), "send_whatsapp", payload, at.UTC().Format(time.RFC3339Nano), at.UTC().Format(time.RFC3339Nano), 8, activatedAt, activatedAt)

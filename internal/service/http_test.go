@@ -424,6 +424,80 @@ func TestCampaignActivationMaterializesAudienceBeforeQueueWrites(t *testing.T) {
 	}
 }
 
+func TestPerRecipientTemplateParametersOverrideOnlyTheirOwnSlot(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.ProductionFlowEnabled = true
+	server.Config.OutboundSendingEnabled = true
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,whatsapp_consent,created_at,updated_at) VALUES(1,'gid://shopify/Customer/1',x'01','opted_in',?,?)`, now, now)
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,whatsapp_consent,created_at,updated_at) VALUES(2,'gid://shopify/Customer/2',x'02','opted_in',?,?)`, now, now)
+
+	create := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/campaigns", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer api")
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, req)
+		return response
+	}
+	segmentJSON := `"segment":{"kind":"frozen_csv","require_whatsapp_consent":true,"customer_shopify_ids":["gid://shopify/Customer/1","gid://shopify/Customer/2"]}`
+	campaignParams := `"params":{"body.1":"literal:SHARED"}`
+
+	if response := create(`{"name":"extra slot",` + segmentJSON + `,"template":"approved","language":"en_US",` + campaignParams + `,"recipient_params":[{"customer_shopify_id":"gid://shopify/Customer/1","params":{"body.2":"literal:EXTRA"}}]}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("a recipient added a parameter slot: code=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := create(`{"name":"outsider",` + segmentJSON + `,"template":"approved","language":"en_US",` + campaignParams + `,"recipient_params":[{"customer_shopify_id":"gid://shopify/Customer/absent","params":{"body.1":"literal:X"}}]}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("an unknown recipient was accepted: code=%d body=%s", response.Code, response.Body.String())
+	}
+
+	response := create(`{"name":"coupons",` + segmentJSON + `,"template":"approved","language":"en_US",` + campaignParams + `,"recipient_params":[{"customer_shopify_id":"gid://shopify/Customer/2","params":{"body.1":"literal:OWN-CODE"}}]}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create code=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"recipients_with_parameters":1`) {
+		t.Fatalf("per-recipient count is not reported: %s", response.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	campaignID, _ := created["id"].(string)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/campaigns/"+campaignID+"/activate", strings.NewReader(`{"confirmed_recipient_count":2}`))
+	req.Header.Set("Authorization", "Bearer api")
+	req.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("activate code=%d body=%s", response.Code, response.Body.String())
+	}
+
+	payloads := map[int64]string{}
+	rows, err := db.DB.Query(`SELECT payload FROM scheduled_jobs`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var payload sendPayload
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		payloads[payload.CustomerID] = payload.Params["body.1"]
+	}
+	if payloads[1] != "literal:SHARED" {
+		t.Fatalf("recipient without its own value lost the campaign value: %q", payloads[1])
+	}
+	if payloads[2] != "literal:OWN-CODE" {
+		t.Fatalf("recipient value did not reach the frozen payload: %q", payloads[2])
+	}
+}
+
 func TestCampaignActivationRejectsAudienceDriftAfterRefund(t *testing.T) {
 	server, db := testHTTPServer(t)
 	defer db.Close()
