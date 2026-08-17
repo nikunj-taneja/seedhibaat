@@ -1045,6 +1045,9 @@ func (s *HTTPServer) importCustomers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "shopify_ids must hold 1-5000 entries", 400)
 		return
 	}
+	// The key carries the minute so an accidental double submit dedupes while a
+	// later re-import still runs; a customer's details change over time.
+	batch := time.Now().UTC().Format("2006-01-02T15:04")
 	queued, duplicate := 0, 0
 	for _, shopifyID := range request.ShopifyIDs {
 		shopifyID = strings.TrimSpace(shopifyID)
@@ -1061,7 +1064,7 @@ func (s *HTTPServer) importCustomers(w http.ResponseWriter, r *http.Request) {
 			StepID:  "customer_import",
 			Kind:    "shopify_sync_customer",
 			Payload: payload,
-		}, "customer-import:"+shopifyID, time.Now())
+		}, "customer-import:"+shopifyID+":"+batch, time.Now())
 		if err != nil {
 			s.Logger.Error("queue customer import", "error", err)
 			http.Error(w, "failed", 500)
