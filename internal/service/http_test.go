@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"github.com/nikunj-taneja/seedhibaat/internal/config"
+	"github.com/nikunj-taneja/seedhibaat/internal/meta"
+	"github.com/nikunj-taneja/seedhibaat/internal/security"
 	"github.com/nikunj-taneja/seedhibaat/internal/store"
 )
 
@@ -464,5 +467,149 @@ func TestWorkflowPauseAndConfirmedActivationControlExistingRuns(t *testing.T) {
 	_ = db.DB.QueryRow(`SELECT state FROM scheduled_jobs WHERE id='job'`).Scan(&jobState)
 	if runState != "active" || jobState != "scheduled" {
 		t.Fatalf("resumed run=%s job=%s", runState, jobState)
+	}
+}
+
+func recordExternal(t *testing.T, server *HTTPServer, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/messages/record", bytes.NewReader([]byte(body)))
+	request.Header.Set("Authorization", "Bearer api")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
+}
+
+func TestExternalMessageRecordingIsTraceableAndIdempotent(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	phoneHash := security.KeyedHash(server.Config.PIIHashKey, "919876500001")
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,phone_hash,created_at,updated_at) VALUES(1,'gid://shopify/Customer/1',x'01',?,?,?)`, phoneHash, now, now)
+
+	body := `{"phone":"+919876500001","template":"stay_upgrade","language":"en_US","category":"MARKETING",
+		"idempotency_key":"key-one","parameter_fingerprint":"fp","meta_message_id":"wamid.ONE",
+		"status":"accepted","attempted_at":"` + now + `"}`
+	response := recordExternal(t, server, body)
+	if response.Code != 200 {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+	var first map[string]any
+	_ = json.Unmarshal(response.Body.Bytes(), &first)
+	if first["recorded"] != true || first["customer_created"] != false {
+		t.Fatalf("unexpected first response: %v", first)
+	}
+
+	var customerID int64
+	var state, source, metaID string
+	if err := db.DB.QueryRow(`SELECT customer_id,state,source,meta_message_id FROM outbound_messages WHERE idempotency_key='key-one'`).Scan(&customerID, &state, &source, &metaID); err != nil {
+		t.Fatal(err)
+	}
+	if customerID != 1 || state != "accepted" || source != "cli" || metaID != "wamid.ONE" {
+		t.Fatalf("row=%d %s %s %s", customerID, state, source, metaID)
+	}
+
+	// Replaying the same ledger line must not create a second message.
+	repeat := recordExternal(t, server, body)
+	var second map[string]any
+	_ = json.Unmarshal(repeat.Body.Bytes(), &second)
+	if second["recorded"] != false || second["already_recorded"] != true {
+		t.Fatalf("replay was not idempotent: %v", second)
+	}
+	var count int
+	if err := db.DB.QueryRow(`SELECT count(*) FROM outbound_messages`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+}
+
+func TestExternalMessageRecordingResolvesWebhooksAndAttribution(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	phoneHash := security.KeyedHash(server.Config.PIIHashKey, "919876500002")
+	_, _ = db.DB.Exec(`INSERT INTO customers(id,shopify_id,phone_ciphertext,phone_hash,created_at,updated_at) VALUES(7,'gid://shopify/Customer/7',x'01',?,?,?)`, phoneHash, now, now)
+
+	response := recordExternal(t, server, `{"phone":"919876500002","template":"stay_upgrade","language":"en_US",
+		"idempotency_key":"key-two","meta_message_id":"wamid.TWO","status":"accepted","attempted_at":"`+now+`"}`)
+	if response.Code != 200 {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// A Meta status webhook for a CLI send must now resolve to the row.
+	processor := &Processor{Store: db, Config: server.Config, Logger: server.Logger}
+	if err := processor.recordMetaStatus(context.Background(), meta.MessageStatus{
+		ID: "wamid.TWO", Status: "read", Timestamp: fmt.Sprint(time.Now().Unix()),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var readAt sql.NullString
+	var state string
+	if err := db.DB.QueryRow(`SELECT read_at,state FROM outbound_messages WHERE idempotency_key='key-two'`).Scan(&readAt, &state); err != nil {
+		t.Fatal(err)
+	}
+	if !readAt.Valid || state != "read" {
+		t.Fatalf("CLI send did not absorb its read receipt: read_at=%v state=%s", readAt, state)
+	}
+}
+
+func TestExternalMessageRecordingCreatesUnknownRecipient(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	response := recordExternal(t, server, `{"phone":"919876500003","template":"stay_upgrade","language":"en_US",
+		"idempotency_key":"key-three","meta_message_id":"wamid.THREE","status":"accepted"}`)
+	if response.Code != 200 {
+		t.Fatalf("code=%d body=%s", response.Code, response.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(response.Body.Bytes(), &created)
+	if created["customer_created"] != true {
+		t.Fatalf("unknown recipient was not created: %v", created)
+	}
+	var consent string
+	if err := db.DB.QueryRow(`SELECT c.whatsapp_consent FROM customers c JOIN outbound_messages m ON m.customer_id=c.id WHERE m.idempotency_key='key-three'`).Scan(&consent); err != nil {
+		t.Fatal(err)
+	}
+	if consent != "unknown" {
+		t.Fatalf("synthesised customer consent=%q, must not imply opt-in", consent)
+	}
+}
+
+func TestExternalMessageRecordingRejectsIncompleteRecords(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	server.Config.PIIHashKey = "hash-key-value-for-tests"
+	for name, body := range map[string]string{
+		"missing phone":       `{"template":"t","language":"en_US","idempotency_key":"k","status":"accepted","meta_message_id":"w"}`,
+		"missing template":    `{"phone":"919876500004","language":"en_US","idempotency_key":"k","status":"accepted","meta_message_id":"w"}`,
+		"missing key":         `{"phone":"919876500004","template":"t","language":"en_US","status":"accepted","meta_message_id":"w"}`,
+		"bad status":          `{"phone":"919876500004","template":"t","language":"en_US","idempotency_key":"k","status":"queued"}`,
+		"accepted without id": `{"phone":"919876500004","template":"t","language":"en_US","idempotency_key":"k","status":"accepted"}`,
+	} {
+		if code := recordExternal(t, server, body).Code; code != 400 {
+			t.Fatalf("%s: code=%d, want 400", name, code)
+		}
+	}
+}
+
+func TestExternalMessageRecordingRequiresAuthentication(t *testing.T) {
+	server, db := testHTTPServer(t)
+	defer db.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/messages/record", bytes.NewReader([]byte(`{}`)))
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("code=%d", response.Code)
+	}
+}
+
+func TestRatesWithoutADenominatorRenderAsUnmeasured(t *testing.T) {
+	if got := ratio(0, 0); got != "—" {
+		t.Fatalf("ratio with no denominator = %q, want an em dash", got)
+	}
+	if got := ratio(0.25, 4); got != "25.0%" {
+		t.Fatalf("ratio with a denominator = %q", got)
 	}
 }

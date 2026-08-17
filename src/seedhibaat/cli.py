@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .operator import OperatorError, register_operator_commands
+from .operator import OperatorError, daemon_request, register_operator_commands
 
 
 REQUIRED_ENV = (
@@ -138,6 +138,72 @@ def require_env() -> dict[str, str]:
     if not re.fullmatch(r"v\d+\.\d+", values["META_GRAPH_API_VERSION"]):
         raise SeedhiBaatError("META_GRAPH_API_VERSION must look like v23.0")
     return values
+
+
+def record_message(record: dict[str, object], *, category: str) -> dict[str, object] | None:
+    """Put one CLI send into the daemon ledger, returning the daemon's response
+    or None when it could not be recorded. Never raises: a recording failure
+    must not stop a send that Meta has already accepted."""
+    payload = {
+        "phone": str(record["phone"]),
+        "template": str(record["template"]),
+        "language": str(record["language"]),
+        "category": category,
+        "idempotency_key": str(record["idempotency_key"]),
+        "parameter_fingerprint": str(record.get("parameter_fingerprint", "")),
+        "status": "accepted" if record.get("status") == "accepted" else "failed",
+        "attempted_at": str(record["timestamp"]),
+    }
+    if record.get("message_id"):
+        payload["meta_message_id"] = str(record["message_id"])
+    if record.get("error"):
+        payload["failure_reason"] = str(record["error"])
+        match = re.search(r"\"code\":\s*(\d+)", str(record["error"]))
+        if match:
+            payload["failure_code"] = match.group(1)
+    try:
+        response = daemon_request("/api/v1/messages/record", method="POST", payload=payload)
+        return response if isinstance(response, dict) else {}
+    except (OperatorError, urllib.error.URLError, json.JSONDecodeError, OSError):
+        return None
+
+
+def daemon_reachable() -> bool:
+    base_url = os.environ.get("SEEDHIBAAT_OPERATOR_URL", "http://127.0.0.1:8088")
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + "/healthz", timeout=10) as response:
+            return response.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def run_ledger_sync(args: argparse.Namespace) -> int:
+    ledger_path = args.ledger or Path.cwd() / "state" / "sends.ndjson"
+    if not ledger_path.exists():
+        raise SeedhiBaatError(f"ledger not found: {ledger_path}")
+    if not daemon_reachable():
+        raise SeedhiBaatError(
+            "daemon is unreachable; start it or set SEEDHIBAAT_OPERATOR_URL to a tunnel"
+        )
+    recorded = already = unresolved = 0
+    with ledger_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if args.since and str(record.get("timestamp", "")) < args.since:
+                continue
+            response = record_message(record, category=args.category)
+            if response is None:
+                unresolved += 1
+            elif response.get("recorded"):
+                recorded += 1
+            else:
+                already += 1
+    print(f"Newly recorded: {recorded}; already present: {already}; failed: {unresolved}")
+    if unresolved:
+        print("Re-run after fixing the daemon connection; recording is idempotent.")
+    return 1 if unresolved else 0
 
 
 def load_sent_keys(path: Path) -> set[str]:
@@ -349,6 +415,18 @@ def run_send(args: argparse.Namespace) -> int:
             print("Cancelled.")
             return 1
 
+    # Every message must be traceable, so refuse to send when the daemon that
+    # owns the ledger cannot be reached. Overriding this is deliberate and
+    # leaves the run needing `ledger sync`.
+    record_to_daemon = not args.skip_daemon_ledger
+    if record_to_daemon and not daemon_reachable():
+        raise SeedhiBaatError(
+            "daemon is unreachable, so these sends could not be recorded or attributed. "
+            "Start the daemon, point SEEDHIBAAT_OPERATOR_URL at it, or pass "
+            "--skip-daemon-ledger to send untracked and reconcile later with 'ledger sync'."
+        )
+    unrecorded = 0
+
     env = require_env()
     root = Path.cwd()
     ledger_path = root / "state" / "sends.ndjson"
@@ -397,10 +475,26 @@ def run_send(args: argparse.Namespace) -> int:
             accepted += 1
         except SeedhiBaatError as exc:
             record = {**base, "status": "failed", "error": str(exc)}
+            append_jsonl(ledger_path, record)
             failed += 1
+        # The daemon owns reporting and revenue attribution, so an unrecorded
+        # send is an invisible send. The ledger line is written first, which
+        # lets `ledger sync` replay anything the daemon missed.
+        if record_to_daemon and not record_message(record, category=args.category):
+            unrecorded += 1
         append_jsonl(run_path, record)
 
     print(f"Accepted: {accepted}; failed: {failed}; skipped duplicates: {skipped}")
+    if record_to_daemon:
+        print(f"Recorded in the daemon ledger: {accepted + failed - unrecorded} of {accepted + failed}")
+        if unrecorded:
+            print(
+                f"WARNING: {unrecorded} message(s) are not in the daemon ledger. "
+                "They will not appear in reporting or attribute revenue until you run: "
+                "seedhibaat ledger sync"
+            )
+    else:
+        print("WARNING: --skip-daemon-ledger was used. These messages are untracked; run 'seedhibaat ledger sync' to record them.")
     print(f"Run log: {run_path}")
     return 1 if failed else 0
 
@@ -417,6 +511,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send.add_argument("--template", required=True)
     send.add_argument("--language", default="en_US")
+    send.add_argument(
+        "--category",
+        default="MARKETING",
+        help="template category recorded in the daemon ledger",
+    )
+    send.add_argument(
+        "--skip-daemon-ledger",
+        action="store_true",
+        help="send without recording to the daemon; the run stays invisible to reporting and attribution until 'ledger sync'",
+    )
     send.add_argument(
         "--header-image-url",
         help="public HTTPS JPEG or PNG supplied to an approved IMAGE header",
@@ -445,6 +549,17 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--allow-resend", action="store_true")
     send.add_argument("--timeout", type=float, default=30.0)
     send.set_defaults(func=run_send)
+
+    ledger = subparsers.add_parser("ledger", help="reconcile the local send ledger with the daemon")
+    ledger_actions = ledger.add_subparsers(dest="ledger_command", required=True)
+    ledger_sync = ledger_actions.add_parser(
+        "sync", help="record ledger sends in the daemon so they appear in reporting and attribution"
+    )
+    ledger_sync.add_argument("--ledger", type=Path, help="defaults to state/sends.ndjson")
+    ledger_sync.add_argument("--since", help="only replay records at or after this RFC3339 timestamp")
+    ledger_sync.add_argument("--category", default="MARKETING")
+    ledger_sync.set_defaults(func=run_ledger_sync)
+
     register_operator_commands(subparsers)
     return parser
 

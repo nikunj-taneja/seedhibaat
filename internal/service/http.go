@@ -63,6 +63,7 @@ func (s *HTTPServer) apiMux() http.Handler {
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/activate", s.activateCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/cancel", s.cancelCampaign)
 	mux.HandleFunc("POST /api/v1/consent/import", s.importConsent)
+	mux.HandleFunc("POST /api/v1/messages/record", s.recordExternalMessage)
 	return mux
 }
 
@@ -861,6 +862,86 @@ func (s *HTTPServer) importConsent(w http.ResponseWriter, r *http.Request) {
 	details, _ := json.Marshal(map[string]any{"source": request.Source, "matched": matched, "unmatched": unmatched})
 	_ = s.Store.Audit(r.Context(), "operator", "consent.import", "consent", "", string(details))
 	writeJSON(w, 200, map[string]any{"matched": matched, "unmatched": unmatched, "source": request.Source})
+}
+
+// recordExternalMessage puts a send made outside the daemon — today only the
+// operator CLI — into outbound_messages, so its Meta status webhooks resolve,
+// it appears in reporting, and read-touch revenue attribution can reach it.
+// It is idempotent on the caller's idempotency key, which lets the CLI replay
+// its ledger after the daemon was unreachable.
+func (s *HTTPServer) recordExternalMessage(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Phone                string `json:"phone"`
+		Template             string `json:"template"`
+		Language             string `json:"language"`
+		Category             string `json:"category"`
+		IdempotencyKey       string `json:"idempotency_key"`
+		ParameterFingerprint string `json:"parameter_fingerprint,omitempty"`
+		MetaMessageID        string `json:"meta_message_id,omitempty"`
+		Status               string `json:"status"`
+		FailureCode          string `json:"failure_code,omitempty"`
+		FailureReason        string `json:"failure_reason,omitempty"`
+		AttemptedAt          string `json:"attempted_at"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	phone := normalizePhone(request.Phone)
+	if phone == "" || request.Template == "" || request.Language == "" || request.IdempotencyKey == "" {
+		http.Error(w, "phone, template, language, and idempotency_key are required", 400)
+		return
+	}
+	if request.Status != "accepted" && request.Status != "failed" {
+		http.Error(w, "status must be accepted or failed", 400)
+		return
+	}
+	if request.Status == "accepted" && request.MetaMessageID == "" {
+		http.Error(w, "accepted records require meta_message_id", 400)
+		return
+	}
+	attempted := request.AttemptedAt
+	if attempted == "" {
+		attempted = time.Now().UTC().Format(time.RFC3339Nano)
+	} else if _, err := time.Parse(time.RFC3339, attempted); err != nil {
+		http.Error(w, "attempted_at must use RFC3339", 400)
+		return
+	}
+	category := request.Category
+	if category == "" {
+		category = "MARKETING"
+	}
+
+	result, err := s.Store.RecordExternalMessage(r.Context(), store.ExternalMessage{
+		PhoneHash:            security.KeyedHash(s.Config.PIIHashKey, phone),
+		PhoneCiphertext:      nil,
+		Template:             request.Template,
+		Language:             request.Language,
+		Category:             category,
+		IdempotencyKey:       request.IdempotencyKey,
+		ParameterFingerprint: request.ParameterFingerprint,
+		MetaMessageID:        request.MetaMessageID,
+		Status:               request.Status,
+		FailureCode:          request.FailureCode,
+		FailureReason:        truncate(request.FailureReason, 500),
+		AttemptedAt:          attempted,
+	}, func() ([]byte, error) {
+		return security.Encrypt(s.Config.PIIHashKey, []byte(phone))
+	})
+	if err != nil {
+		s.Logger.Error("record external message", "error", err)
+		http.Error(w, "failed", 500)
+		return
+	}
+	if result.Created {
+		details, _ := json.Marshal(map[string]any{"source": "cli", "template": request.Template, "status": request.Status, "customer_created": result.CustomerCreated})
+		_ = s.Store.Audit(r.Context(), "operator", "message.record_external", "message", result.MessageID, string(details))
+	}
+	writeJSON(w, 200, map[string]any{
+		"message_id":       result.MessageID,
+		"recorded":         result.Created,
+		"already_recorded": !result.Created,
+		"customer_created": result.CustomerCreated,
+	})
 }
 
 func (s *HTTPServer) authenticated(next http.Handler) http.Handler {

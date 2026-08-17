@@ -57,6 +57,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("list migrations: %w", err)
 	}
 	sort.Strings(entries)
+	// Two files sharing a version silently skip whichever sorts later, because
+	// the first one recorded marks that version applied.
+	seen := make(map[int]string, len(entries))
 	for _, entry := range entries {
 		base := filepath.Base(entry)
 		versionText, _, ok := strings.Cut(base, "_")
@@ -67,6 +70,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("invalid migration version %q: %w", base, err)
 		}
+		if previous, duplicate := seen[version]; duplicate {
+			return fmt.Errorf("duplicate migration version %d in %q and %q", version, previous, base)
+		}
+		seen[version] = base
 		var exists int
 		err = s.DB.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'").Scan(&exists)
 		if err != nil {

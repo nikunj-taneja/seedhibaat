@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -369,5 +370,74 @@ func TestPauseAndResumeRequireValidRunState(t *testing.T) {
 	}
 	if err := s.ResumeWorkflow(context.Background(), "missing"); err == nil {
 		t.Fatal("missing workflow run resumed")
+	}
+}
+
+func TestMigrationVersionsAreUnique(t *testing.T) {
+	entries, err := fs.Glob(migrationFS, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for _, entry := range entries {
+		base := filepath.Base(entry)
+		version, _, _ := strings.Cut(base, "_")
+		if previous, duplicate := seen[version]; duplicate {
+			t.Fatalf("migrations %q and %q share version %s; the later one is silently skipped", previous, base, version)
+		}
+		seen[version] = base
+	}
+}
+
+func TestExternalMessagesAreRecordedOncePerIdempotencyKey(t *testing.T) {
+	s, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	message := ExternalMessage{
+		PhoneHash: "hash-value", Template: "stay_upgrade", Language: "en_US", Category: "MARKETING",
+		IdempotencyKey: "key", MetaMessageID: "wamid.ONE", Status: "accepted",
+		AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	encrypt := func() ([]byte, error) { return []byte{0x01}, nil }
+	first, err := s.RecordExternalMessage(context.Background(), message, encrypt)
+	if err != nil || !first.Created || !first.CustomerCreated {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	second, err := s.RecordExternalMessage(context.Background(), message, encrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Created || second.MessageID != first.MessageID {
+		t.Fatalf("replay created a duplicate: %+v", second)
+	}
+	var customers int
+	if err := s.DB.QueryRow(`SELECT count(*) FROM customers`).Scan(&customers); err != nil || customers != 1 {
+		t.Fatalf("customers=%d err=%v", customers, err)
+	}
+}
+
+func TestFailedExternalMessageIsRecordedWithItsCode(t *testing.T) {
+	s, err := Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, err = s.RecordExternalMessage(context.Background(), ExternalMessage{
+		PhoneHash: "hash-failed", Template: "stay_upgrade", Language: "en_US", Category: "MARKETING",
+		IdempotencyKey: "key-failed", Status: "failed", FailureCode: "131049",
+		FailureReason: "healthy ecosystem", AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}, func() ([]byte, error) { return []byte{0x01}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state, code string
+	var metaID sql.NullString
+	if err := s.DB.QueryRow(`SELECT state,failure_code,meta_message_id FROM outbound_messages WHERE idempotency_key='key-failed'`).Scan(&state, &code, &metaID); err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" || code != "131049" || metaID.Valid {
+		t.Fatalf("state=%s code=%s meta=%v", state, code, metaID)
 	}
 }

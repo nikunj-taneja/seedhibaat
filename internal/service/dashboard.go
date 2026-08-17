@@ -206,7 +206,7 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		AttributionWindow: humanDuration(s.Config.AttributionWindow),
 		Revenue:           formatRevenue(metrics.RevenueByCurrency),
 		Conversions:       metrics.ConvertedRecipients,
-		ConversionRate:    percent(metrics.ConversionRate),
+		ConversionRate:    ratio(metrics.ConversionRate, metrics.DeliveredRecipients),
 		OptOuts:           metrics.OptOuts,
 		Replies:           metrics.Replies,
 		Empty:             metrics.Attempted == 0,
@@ -225,10 +225,10 @@ func (s *HTTPServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	view.Cards = []dashboardCard{
-		{Label: "Delivery rate", Value: percent(metrics.DeliveryRate), Note: comma(metrics.Delivered) + " delivered of " + comma(metrics.Accepted) + " accepted", Tone: "green"},
-		{Label: "Read rate", Value: percent(metrics.ObservedReadRate), Note: comma(metrics.ObservedRead) + " Meta read receipts", Tone: "green"},
-		{Label: "Unique CTR", Value: percent(metrics.UniqueCTR), Note: comma(metrics.UniqueClicks) + " unique clickers", Tone: "green"},
-		{Label: "CVR", Value: percent(metrics.ConversionRate), Note: comma(metrics.ConvertedRecipients) + " converted ÷ " + comma(metrics.DeliveredRecipients) + " delivered recipients", Tone: "green"},
+		{Label: "Delivery rate", Value: ratio(metrics.DeliveryRate, metrics.Accepted), Note: comma(metrics.Delivered) + " delivered of " + comma(metrics.Accepted) + " accepted", Tone: "green"},
+		{Label: "Read rate", Value: ratio(metrics.ObservedReadRate, metrics.Delivered), Note: comma(metrics.ObservedRead) + " Meta read receipts", Tone: "green"},
+		{Label: "Unique CTR", Value: ratio(metrics.UniqueCTR, metrics.Delivered), Note: comma(metrics.UniqueClicks) + " unique clickers", Tone: "green"},
+		{Label: "CVR", Value: ratio(metrics.ConversionRate, metrics.DeliveredRecipients), Note: comma(metrics.ConvertedRecipients) + " converted ÷ " + comma(metrics.DeliveredRecipients) + " delivered recipients", Tone: "green"},
 		{Label: "Attributed revenue", Value: view.Revenue, Note: comma(metrics.ConvertedRecipients) + " converted recipients", Tone: "green"},
 		{Label: "Estimated spend", Value: view.Spend, Note: comma(marketingDelivered) + " delivered marketing messages", Tone: "green"},
 		{Label: "ROAS", Value: view.ROAS, Note: "Attributed revenue ÷ estimated spend", Tone: "green"},
@@ -442,6 +442,15 @@ func clampInt(value, low, high int) int {
 
 func percent(value float64) string {
 	return strconv.FormatFloat(value*100, 'f', 1, 64) + "%"
+}
+
+// ratio renders a rate that has no denominator as "—" instead of 0.0%, so an
+// absent measurement never reads as a measured zero.
+func ratio(value float64, denominator int64) string {
+	if denominator == 0 {
+		return "—"
+	}
+	return percent(value)
 }
 
 func comma(value int64) string {

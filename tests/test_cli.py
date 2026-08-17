@@ -15,6 +15,7 @@ from seedhibaat.cli import (
     normalize_phone,
     read_recipient_rows,
     read_recipients,
+    record_message,
     require_env,
     send_template,
 )
@@ -278,3 +279,122 @@ class SafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LedgerTraceabilityTests(unittest.TestCase):
+    def _csv(self, directory: str) -> Path:
+        path = Path(directory) / "recipients.csv"
+        path.write_text("phone\n9876543210\n", encoding="utf-8")
+        return path
+
+    def test_live_send_refuses_when_the_daemon_cannot_record_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._csv(directory)
+            stderr = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=False):
+                with patch("sys.stderr", stderr):
+                    with patch("seedhibaat.cli.send_template") as send:
+                        code = main(
+                            [
+                                "send",
+                                "--csv",
+                                str(path),
+                                "--template",
+                                "order_update",
+                                "--default-country-code",
+                                "91",
+                                "--send",
+                                "--yes",
+                            ]
+                        )
+            self.assertEqual(code, 2)
+            self.assertIn("could not be recorded", stderr.getvalue())
+            send.assert_not_called()
+
+    def test_dry_run_does_not_need_the_daemon(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._csv(directory)
+            with patch("seedhibaat.cli.daemon_reachable", return_value=False) as reachable:
+                self.assertEqual(
+                    main(["send", "--csv", str(path), "--template", "order_update"]), 0
+                )
+            reachable.assert_not_called()
+
+    def test_record_message_maps_a_failure_code_from_the_meta_error(self):
+        record = {
+            "timestamp": "2026-08-16T09:27:24Z",
+            "phone": "+919876543210",
+            "template": "stay_upgrade",
+            "language": "en_US",
+            "idempotency_key": "key",
+            "parameter_fingerprint": "fp",
+            "status": "failed",
+            "error": 'Meta HTTP 400: {"error":{"message":"x","code":131049}}',
+        }
+        with patch("seedhibaat.cli.daemon_request", return_value={"recorded": True}) as request:
+            self.assertEqual(record_message(record, category="MARKETING"), {"recorded": True})
+        payload = request.call_args.kwargs["payload"]
+        self.assertEqual(payload["failure_code"], "131049")
+        self.assertEqual(payload["status"], "failed")
+        self.assertNotIn("meta_message_id", payload)
+
+    def test_record_message_reports_failure_instead_of_raising(self):
+        record = {
+            "timestamp": "2026-08-16T09:27:24Z",
+            "phone": "+919876543210",
+            "template": "stay_upgrade",
+            "language": "en_US",
+            "idempotency_key": "key",
+            "status": "accepted",
+            "message_id": "wamid.1",
+        }
+        with patch("seedhibaat.cli.daemon_request", side_effect=OSError("connection refused")):
+            self.assertIsNone(record_message(record, category="MARKETING"))
+
+    def test_ledger_sync_replays_every_line_and_counts_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "sends.ndjson"
+            ledger.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2026-08-16T09:27:24Z",
+                        "phone": "+919876543210",
+                        "template": "stay_upgrade",
+                        "language": "en_US",
+                        "idempotency_key": "key-one",
+                        "status": "accepted",
+                        "message_id": "wamid.1",
+                    }
+                )
+                + "\n"
+                + json.dumps(
+                    {
+                        "timestamp": "2026-08-16T09:27:25Z",
+                        "phone": "+919876543211",
+                        "template": "stay_upgrade",
+                        "language": "en_US",
+                        "idempotency_key": "key-two",
+                        "status": "accepted",
+                        "message_id": "wamid.2",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            responses = [{"recorded": True}, {"recorded": False, "already_recorded": True}]
+            with patch("seedhibaat.cli.daemon_reachable", return_value=True):
+                with patch("seedhibaat.cli.daemon_request", side_effect=responses):
+                    self.assertEqual(
+                        main(["ledger", "sync", "--ledger", str(ledger)]), 0
+                    )
+
+    def test_ledger_sync_refuses_when_the_daemon_is_down(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "sends.ndjson"
+            ledger.write_text("", encoding="utf-8")
+            stderr = io.StringIO()
+            with patch("seedhibaat.cli.daemon_reachable", return_value=False):
+                with patch("sys.stderr", stderr):
+                    code = main(["ledger", "sync", "--ledger", str(ledger)])
+            self.assertEqual(code, 2)
+            self.assertIn("unreachable", stderr.getvalue())
